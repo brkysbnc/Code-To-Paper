@@ -1,1 +1,3 @@
-GitPython
+chromadb
+openai
+python-dotenv
