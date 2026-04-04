@@ -1,50 +1,41 @@
-import os
-import shutil
-from git import Repo
+"""
+Faz 1 giriş noktası: GitHub'dan kod çekme ve hazırlama.
 
-def setup_phase_1(github_url, target_dir="data/source"):
+Eski isim `setup_phase_1` korunur; asıl iş `github_handler.clone_and_prepare` içinde.
+Böylece ileride Streamlit / CLI başka modülden de aynı fonksiyonu çağırabilir.
+"""
 
-    os.makedirs(target_dir, exist_ok=True)
-    if os.listdir(target_dir):
-        print(f"Eski kodlar temizleniyor: {target_dir}")
-        shutil.rmtree(target_dir)
-        os.makedirs(target_dir)
+from github_handler import clone_and_prepare
 
-    print(f"Repo indiriliyor...\nKaynak: {github_url}\nHedef: {target_dir}")
 
+def setup_phase_1(github_url: str, target_dir: str = "data/source") -> None:
+    """
+    Public GitHub URL'sinden repoyu indirir, gereksiz dosyaları temizler, özet yazar.
+
+    Yapılanlar (github_handler üzerinden):
+        - Hedef klasör doluysa silinip yeniden klonlanır.
+        - Klon sonrası .git, node_modules, .env, görseller vb. süzülür.
+        - data/fetch_info.txt oluşturulur (URL + commit hash).
+        - İndekslenebilecek dosya yolları sayılır (chunk aşaması için önizleme).
+
+    Args:
+        github_url: Klonlanacak public repo HTTPS adresi.
+        target_dir: Kaynak kodun yazılacağı kök (varsayılan data/source).
+
+    Not:
+        Ağ / izin hatalarında mesaj yazdırılır; üst seviye API istersen burada
+        logging veya özel exception fırlatma eklenebilir.
+    """
     try:
-        repo = Repo.clone_from(github_url, target_dir)
-        commit_hash = repo.head.commit.hexsha
-        
-        info_path = os.path.join("data", "fetch_info.txt")
-        with open(info_path, "w", encoding="utf-8") as f:
-            f.write("=== PROJE KAYNAK KODU BİLGİSİ ===\n")
-            f.write(f"Kaynak URL: {github_url}\n")
-            f.write(f"Commit Hash: {commit_hash}\n")
-            f.write("Not: Bu klasördeki kodlar RAG işlemi için otomatik çekilmiştir.\n")
-            
-        gitignore_path = ".gitignore"
-        ignore_rule = "data/\n" 
-        
-        if not os.path.exists(gitignore_path):
-            with open(gitignore_path, "w") as f:
-                f.write(ignore_rule)
-        else:
-            with open(gitignore_path, "r") as f:
-                content = f.read()
-            if ignore_rule.strip() not in content:
-                with open(gitignore_path, "a") as f:
-                    f.write(f"\n{ignore_rule}")
-
-        print("\n✅ FAZ 1 TAMAMLANDI!")
-        print(f"- Kodlar '{target_dir}' klasörüne çekildi.")
-        print(f"- Commit bilgisi '{info_path}' dosyasına yazıldı.")
-        print("- .gitignore güncellendi.")
-
+        commit, paths = clone_and_prepare(github_url, target_dir)
+        print("\nFAZ 1 tamamlandi.")
+        print(f"- Kodlar '{target_dir}' altina alindi (commit: {commit[:8]}...).")
+        print(f"- Indekslenebilir dosya sayisi: {len(paths)}")
+        print("- Detay: data/fetch_info.txt")
     except Exception as e:
-        print(f"❌ Klonlama sırasında hata oluştu: {str(e)}")
+        print(f"Klonlama veya hazirlama hatasi: {e}")
 
-# Test Etmek İçin GitHub'dan Flask pallet dosyasını çektim:
+
+# Doğrudan çalıştırıldığında örnek bir public repo ile hızlı duman testi.
 if __name__ == "__main__":
-    test_url = "https://github.com/pallets/flask.git" 
-    setup_phase_1(test_url)
+    setup_phase_1("https://github.com/pallets/flask.git")
