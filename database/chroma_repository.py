@@ -1,36 +1,55 @@
-import uuid
+"""
+Chroma veri katmanı.
+
+Bu modül, chunk verilerini Chroma'ya yazmadan önce ortak sözleşmeye göre
+doğrular. Böylece takım içi alan adı farklılıklarından doğan entegrasyon
+hataları erken aşamada yakalanır.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Iterable
+
 from database.chroma_client import get_collection
+from database.chunk_contract import build_chroma_payload
 
 # Koleksiyonu başlat
 collection = get_collection()
 
-def upsert_chunks(chunks):
-    """Kod parçalarını metadata ile birlikte kaydeder."""
-    # Gelen listeyi ChromaDB'nin anlayacağı parçalara ayırıyoruz
-    ids = [str(uuid.uuid4()) for _ in chunks]
-    documents = [c.get('text', '') for c in chunks]
-    metadatas = [{
-        "source_repo": c.get('source_repo', ''),
-        "file_path": c.get('file_path', ''),
-        "content_hash": c.get('content_hash', '')
-    } for c in chunks]
-    
-    collection.upsert(
-        ids=ids,
-        documents=documents,
-        metadatas=metadatas
-    )
-    print(f"{len(chunks)} parça başarıyla kaydedildi.")
+def upsert_chunks(chunks: Iterable[dict[str, Any]]) -> None:
+    """
+    Chunk listesini standart metadata şemasıyla Chroma'ya yazar.
 
-def search_by_embedding(query_embedding, top_k=5):
-    """Vektör bazlı arama yapar."""
+    Not:
+        - `database.chunk_contract` içindeki zorunlu alanlar denetlenir.
+        - Geçersiz chunk görüldüğünde ValueError fırlatılır.
+    """
+    payload = build_chroma_payload(chunks)
+    if not payload["ids"]:
+        return
+
+    collection.upsert(
+        ids=payload["ids"],
+        documents=payload["documents"],
+        metadatas=payload["metadatas"],
+    )
+    print(f"{len(payload['ids'])} parça başarıyla kaydedildi.")
+
+
+def search_by_embedding(query_embedding: list[float], top_k: int = 5) -> dict[str, Any]:
+    """Vektör bazlı arama yapar ve ham Chroma sonucunu döndürür."""
     results = collection.query(
         query_embeddings=[query_embedding],
-        n_results=top_k
+        n_results=top_k,
     )
     return results
 
-def delete_by_repo(source_repo):
-    """Belirli bir repoya ait tüm verileri siler."""
-    collection.delete(where={"source_repo": source_repo})
-    print(f"{source_repo} reposuna ait veriler temizlendi.")
+
+def delete_by_repo(repo_url: str) -> None:
+    """
+    Belirli bir repoya ait tüm verileri siler.
+
+    Standarda göre filtre alanı `repo_url` olarak kullanılır.
+    """
+    collection.delete(where={"repo_url": repo_url})
+    print(f"{repo_url} reposuna ait veriler temizlendi.")
