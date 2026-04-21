@@ -9,7 +9,6 @@ ortak bir veri standardı üzerinde çalışır.
 from __future__ import annotations
 
 import hashlib
-import uuid
 from typing import Any, Dict, Iterable, List
 
 # Child/Parent ayrımı RAG akışında zorunlu olduğu için sabit olarak tutulur.
@@ -62,6 +61,38 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _deterministic_chunk_id(
+    *,
+    repo_url: str,
+    commit_hash: str,
+    file_path: str,
+    doc_type: str,
+    parent_id: str,
+    start_line: int,
+    end_line: int,
+    content_hash: str,
+) -> str:
+    """
+    Chunk için tekrar üretilebilir (deterministic) kimlik üretir.
+
+    Aynı içerik/konum tekrar upsert edildiğinde aynı ID kullanılacağı için
+    Chroma tarafında duplicate yerine güncelleme (idempotent upsert) gerçekleşir.
+    """
+    raw = "|".join(
+        [
+            repo_url,
+            commit_hash,
+            file_path,
+            doc_type,
+            parent_id,
+            str(start_line),
+            str(end_line),
+            content_hash,
+        ]
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def normalize_chunk(raw_chunk: Dict[str, Any]) -> Dict[str, Any]:
     """
     Ham chunk verisini takım standardına normalize eder.
@@ -76,7 +107,6 @@ def normalize_chunk(raw_chunk: Dict[str, Any]) -> Dict[str, Any]:
     repo_url = _safe_str(raw_chunk.get("repo_url") or raw_chunk.get("source_repo")).strip()
     doc_type = _safe_str(raw_chunk.get("doc_type") or raw_chunk.get("chunk_type")).strip().lower()
 
-    chunk_id = _safe_str(raw_chunk.get("chunk_id")).strip() or str(uuid.uuid4())
     parent_id = _safe_str(raw_chunk.get("parent_id")).strip()
     commit_hash = _safe_str(raw_chunk.get("commit_hash")).strip()
     file_path = _safe_str(raw_chunk.get("file_path")).strip()
@@ -87,6 +117,16 @@ def normalize_chunk(raw_chunk: Dict[str, Any]) -> Dict[str, Any]:
     end_line = _safe_int(raw_chunk.get("end_line"), -1)
 
     content_hash = _safe_str(raw_chunk.get("content_hash")).strip() or _content_hash(text)
+    chunk_id = _safe_str(raw_chunk.get("chunk_id")).strip() or _deterministic_chunk_id(
+        repo_url=repo_url,
+        commit_hash=commit_hash,
+        file_path=file_path,
+        doc_type=doc_type,
+        parent_id=parent_id,
+        start_line=start_line,
+        end_line=end_line,
+        content_hash=content_hash,
+    )
 
     return {
         "chunk_id": chunk_id,

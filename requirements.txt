@@ -9,6 +9,8 @@ GitPython>=3.1.40
 # RAG / parçalama / vektör store köprüsü
 langchain>=0.2.0
 langchain-openai>=0.1.8
+langchain-google-genai>=2.1.0
+langchain-chroma>=0.2.0
 langchain-community>=0.2.0
 langchain-text-splitters>=0.2.0
 
