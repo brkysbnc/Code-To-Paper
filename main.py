@@ -12,6 +12,7 @@ import os
 import time
 from pathlib import Path
 
+from agents.writer import AcademicWriter
 import streamlit as st
 from dotenv import load_dotenv
 from google import genai
@@ -470,46 +471,26 @@ def _render_agent_preview_panel() -> None:
             el = doc.metadata.get("end_line", "?")
             st.caption(f"{fp}  (satir {sl}-{el})")
 
-    if st.button("Writer: Ingilizce kisa taslak (sadece secilen baglam)", use_container_width=True):
-        retrieved_docs = st.session_state.get("retrieved_parent_docs")
-        if not retrieved_docs:
-            st.error("Once multi-query retrieval calistirin.")
-            return
-        context_parts: list[str] = []
-        for doc in retrieved_docs[:10]:
-            fp = str(doc.metadata.get("file_path", "unknown"))
-            sl = doc.metadata.get("start_line", -1)
-            el = doc.metadata.get("end_line", -1)
-            body = (doc.page_content or "")[:6000]
-            context_parts.append(f"[{fp} lines {sl}-{el}]\n{body}")
-        context_blob = "\n\n---\n\n".join(context_parts)
-        model_name = _get_cached_gemini_chat_model_name()
-        llm = _build_gemini_llm(model_name)
-        writer_prompt = (
-            "You are writing ONE section of an IEEE-style software architecture paper in English.\n"
-            f"Section title: {section_title}\n"
-            "Rules:\n"
-            "- Use ONLY the evidence in CONTEXT below. Do not invent libraries, products, or features not shown.\n"
-            "- Academic tone, third person, concise (about 250-400 words).\n"
-            "- Cite sources inline like (path:lines).\n"
-            "- If context is insufficient, say explicitly what is missing.\n\n"
-            f"CONTEXT:\n{context_blob}"
+if st.button("Writer: İngilizce kısa taslak"):
+    def safe_invoke(prompt_text):
+        response = _invoke_gemini_chat_with_retry(st.session_state["llm"], prompt_text)
+        return response.content
+
+    writer = AcademicWriter(llm_invoke_func=safe_invoke)
+    
+    with st.spinner("Makale bölümü yazılıyor, lütfen bekleyin..."):
+        result = writer.generate_section(
+            section_title=st.session_state.get("section_title", "Architecture Overview"),
+            section_goal=st.session_state.get("section_goal", "Explain the core components."),
+            parent_documents=retrieved_parent_docs,
+            max_parents=10
         )
-        with st.spinner("Writer (Gemini) calisiyor..."):
-            try:
-                draft = _invoke_gemini_chat_with_retry(llm, writer_prompt)
-                st.session_state["writer_draft_en"] = draft
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"Writer hatasi: {exc}")
-                st.warning(_gemini_retry_hint(exc))
-                return
-        st.success("Taslak uretildi.")
-
-    draft = st.session_state.get("writer_draft_en")
-    if draft:
-        st.markdown("**Writer ciktisi (English)**")
-        st.markdown(draft)
-
+    
+    if result["metadata"]["status"] == "success":
+        st.session_state["writer_draft_en"] = result["text"]
+        st.success(f" Taslak başarıyla oluşturuldu! ({result['metadata']['parents_used']} kaynak dosya kullanıldı.)")
+    else:
+        st.error(f" Bir hata oluştu: {result['text']}")
 
 def main() -> None:
     st.set_page_config(
