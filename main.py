@@ -471,26 +471,39 @@ def _render_agent_preview_panel() -> None:
             el = doc.metadata.get("end_line", "?")
             st.caption(f"{fp}  (satir {sl}-{el})")
 
-if st.button("Writer: İngilizce kısa taslak"):
-    def safe_invoke(prompt_text):
-        response = _invoke_gemini_chat_with_retry(st.session_state["llm"], prompt_text)
-        return response.content
+    if st.button("Writer: Ingilizce bolum (IEEE + Mermaid)", use_container_width=True):
+        retrieved_docs = st.session_state.get("retrieved_parent_docs")
+        if not retrieved_docs:
+            st.error("Once multi-query retrieval calistirin.")
+        else:
 
-    writer = AcademicWriter(llm_invoke_func=safe_invoke)
-    
-    with st.spinner("Makale bölümü yazılıyor, lütfen bekleyin..."):
-        result = writer.generate_section(
-            section_title=st.session_state.get("section_title", "Architecture Overview"),
-            section_goal=st.session_state.get("section_goal", "Explain the core components."),
-            parent_documents=retrieved_parent_docs,
-            max_parents=10
-        )
-    
-    if result["metadata"]["status"] == "success":
-        st.session_state["writer_draft_en"] = result["text"]
-        st.success(f" Taslak başarıyla oluşturuldu! ({result['metadata']['parents_used']} kaynak dosya kullanıldı.)")
-    else:
-        st.error(f" Bir hata oluştu: {result['text']}")
+            def safe_invoke(prompt_text: str) -> str:
+                """Her Writer cagrisinda guncel Gemini chat modeliyle invoke + retry uygular."""
+                model_name = _get_cached_gemini_chat_model_name()
+                llm = _build_gemini_llm(model_name)
+                return _invoke_gemini_chat_with_retry(llm, prompt_text)
+
+            writer = AcademicWriter(llm_invoke_func=safe_invoke)
+            with st.spinner("Makale bolumu yaziliyor..."):
+                result = writer.generate_section(
+                    section_title=section_title,
+                    section_goal=section_goal,
+                    parent_documents=list(retrieved_docs),
+                    max_parents=10,
+                )
+            if result["metadata"]["status"] == "success":
+                st.session_state["writer_draft_en"] = result["text"]
+                st.success(
+                    f"Taslak olusturuldu. ({result['metadata']['parents_used']} kaynak parca kullanildi.)"
+                )
+            else:
+                st.error(result["text"])
+
+    draft = st.session_state.get("writer_draft_en")
+    if draft:
+        st.markdown("**Writer ciktisi (English)**")
+        st.markdown(draft)
+
 
 def main() -> None:
     st.set_page_config(
