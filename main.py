@@ -471,16 +471,19 @@ def _render_agent_preview_panel() -> None:
             el = doc.metadata.get("end_line", "?")
             st.caption(f"{fp}  (satir {sl}-{el})")
 
+    st.markdown("---")
+    st.markdown("##### Writer modulu (IEEE + Mermaid)")
+
     if st.button("Writer: Ingilizce bolum (IEEE + Mermaid)", use_container_width=True):
         retrieved_docs = st.session_state.get("retrieved_parent_docs")
         if not retrieved_docs:
             st.error("Once multi-query retrieval calistirin.")
         else:
+            model_name = _get_cached_gemini_chat_model_name()
+            llm = _build_gemini_llm(model_name)
 
             def safe_invoke(prompt_text: str) -> str:
-                """Her Writer cagrisinda guncel Gemini chat modeliyle invoke + retry uygular."""
-                model_name = _get_cached_gemini_chat_model_name()
-                llm = _build_gemini_llm(model_name)
+                """Bu tiklamaya ozel LLM oturumu ile invoke; retry str dondurur (.content yok)."""
                 return _invoke_gemini_chat_with_retry(llm, prompt_text)
 
             writer = AcademicWriter(llm_invoke_func=safe_invoke)
