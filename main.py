@@ -471,26 +471,47 @@ def _render_agent_preview_panel() -> None:
             el = doc.metadata.get("end_line", "?")
             st.caption(f"{fp}  (satir {sl}-{el})")
 
-if st.button("Writer: İngilizce kısa taslak"):
-    def safe_invoke(prompt_text):
-        response = _invoke_gemini_chat_with_retry(st.session_state["llm"], prompt_text)
-        return response.content
 
-    writer = AcademicWriter(llm_invoke_func=safe_invoke)
-    
-    with st.spinner("Makale bölümü yazılıyor, lütfen bekleyin..."):
-        result = writer.generate_section(
-            section_title=st.session_state.get("section_title", "Architecture Overview"),
-            section_goal=st.session_state.get("section_goal", "Explain the core components."),
-            parent_documents=retrieved_parent_docs,
-            max_parents=10
-        )
-    
-    if result["metadata"]["status"] == "success":
-        st.session_state["writer_draft_en"] = result["text"]
-        st.success(f" Taslak başarıyla oluşturuldu! ({result['metadata']['parents_used']} kaynak dosya kullanıldı.)")
-    else:
-        st.error(f" Bir hata oluştu: {result['text']}")
+    st.markdown("---")
+    st.markdown("###  Writer Modülü (Taslak Üretimi)")
+
+    if st.button("Writer: İngilizce kısa taslak"):
+        retrieved_docs = st.session_state.get("retrieved_parent_docs")
+        
+        if not retrieved_docs:
+            st.warning(" Önce multi-query retrieval çalıştırın. Üretim için kod bağlamı bulunamadı!")
+        else:
+            with st.spinner("Makale bölümü yazılıyor, lütfen bekleyin..."):
+                
+                # LLM'i sıfırdan kuruyoruz (Berkay'ın uyarısı)
+                model_name = _get_cached_gemini_chat_model_name()
+                llm = _build_gemini_llm(model_name)
+                
+                # safe_invoke düzeltildi: Sadece str dönüyor, .content kaldırıldı
+                def safe_invoke(prompt_text):
+                    return _invoke_gemini_chat_with_retry(llm, prompt_text)
+
+                # Yazarımızı ayağa kaldırıyoruz
+                writer = AcademicWriter(llm_invoke_func=safe_invoke)
+                
+                # Widget'lardan gelen başlık ve amacı doğrudan veriyoruz
+                result = writer.generate_section(
+                    section_title=section_title, 
+                    section_goal=section_goal,
+                    parent_documents=list(retrieved_docs),
+                    max_parents=10
+                )
+                
+                # Sonucu kontrol et ve ekrana bas
+                if result["metadata"]["status"] == "success":
+                    st.session_state["writer_draft_en"] = result["text"]
+                    st.success(f" Taslak başarıyla oluşturuldu! ({result['metadata']['parents_used']} kaynak kullanıldı.)")
+                else:
+                    st.error(f" Bir hata oluştu: {result['text']}")
+
+    if "writer_draft_en" in st.session_state:
+        st.markdown("#### 📄 Üretilen Bölüm")
+        st.markdown(st.session_state["writer_draft_en"])
 
 def main() -> None:
     st.set_page_config(
