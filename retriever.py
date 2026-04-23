@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterable
 
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 from dotenv import load_dotenv
 from langchain_core.language_models import BaseChatModel
 
@@ -50,6 +51,78 @@ from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 LOGGER = logging.getLogger(__name__)
+
+# Free tier: gemini-embedding dakikada ~100 istek; parent-child cok child uretir.
+_DEFAULT_EMBED_MIN_INTERVAL_S = 0.62
+
+
+class ThrottledGeminiEmbeddings(Embeddings):
+    """
+    Gemini embedding cagrilarini siralar ve istekler arasinda bekler.
+
+    Parent-child indekslemede tek dosya yuzlerce child uretebilir; Google
+    free tier 429 verir. Bu sarmalayici embed_documents icinde metinleri tek
+    tek (veya kisa aralikla) gondererek dakika kotasinin altinda kalir.
+    """
+
+    def __init__(
+        self,
+        inner: GoogleGenerativeAIEmbeddings,
+        *,
+        min_interval_s: float = _DEFAULT_EMBED_MIN_INTERVAL_S,
+    ) -> None:
+        self._inner = inner
+        self._min_interval_s = max(0.05, float(min_interval_s))
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Her metin icin ayri embedding + istekler arasi bekleme ve 429 retry."""
+        if not texts:
+            return []
+        out: list[list[float]] = []
+        for i, text in enumerate(texts):
+            if i > 0:
+                time.sleep(self._min_interval_s)
+            out.append(self._embed_one_with_retry(text))
+        return out
+
+    def embed_query(self, text: str) -> list[float]:
+        """Sorgu embeddingi; ayni kota icin kisa throttle uygulanir."""
+        time.sleep(self._min_interval_s)
+        return self._embed_one_with_retry(text)
+
+    def _embed_one_with_retry(self, text: str) -> list[float]:
+        """429/resource_exhausted durumunda ussel geri cekilme ile tekrar dener."""
+        delay_s = 2.0
+        last_exc: BaseException | None = None
+        for attempt in range(10):
+            try:
+                vec = self._inner.embed_documents([text])
+                return list(vec[0])
+            except BaseException as exc:  # noqa: BLE001
+                last_exc = exc
+                err = str(exc).lower()
+                retryable = any(
+                    x in err
+                    for x in (
+                        "429",
+                        "resource_exhausted",
+                        "quota",
+                        "503",
+                        "unavailable",
+                    )
+                )
+                if not retryable or attempt == 9:
+                    raise
+                LOGGER.warning(
+                    "Embedding gecici hata (deneme %s/10), %.1fs bekleniyor: %s",
+                    attempt + 1,
+                    delay_s,
+                    exc,
+                )
+                time.sleep(delay_s)
+                delay_s = min(delay_s * 1.8, 90.0)
+        raise RuntimeError(str(last_exc)) from last_exc
+
 
 DEFAULT_PARENT_CHUNK_SIZE = 1500
 DEFAULT_PARENT_CHUNK_OVERLAP = 200
@@ -115,7 +188,17 @@ def build_rag_stack_for_repo(
     token = hashlib.sha256(f"{repo_url}|{commit_hash}".encode("utf-8")).hexdigest()[:16]
     persist_dir = Path("data/chroma_rag") / token
     persist_dir.mkdir(parents=True, exist_ok=True)
-    embeddings = build_gemini_embeddings(model=embedding_model)
+    base_embeddings = build_gemini_embeddings(model=embedding_model)
+    # Free tier: cok sayida child = cok embed; istekleri seyrelt
+    if os.getenv("GEMINI_EMBED_NO_THROTTLE", "").strip().lower() in {"1", "true", "yes"}:
+        embeddings = base_embeddings
+    else:
+        raw_iv = os.getenv("GEMINI_EMBED_MIN_INTERVAL_S", str(_DEFAULT_EMBED_MIN_INTERVAL_S)).strip()
+        try:
+            min_iv = float(raw_iv) if raw_iv else _DEFAULT_EMBED_MIN_INTERVAL_S
+        except ValueError:
+            min_iv = _DEFAULT_EMBED_MIN_INTERVAL_S
+        embeddings = ThrottledGeminiEmbeddings(base_embeddings, min_interval_s=min_iv)
     return build_parent_child_retriever(
         embeddings,
         collection_name=f"code_pc_{token}",

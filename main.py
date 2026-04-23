@@ -248,14 +248,15 @@ def _render_rag_indexing_section(
     _sync_rag_session_if_repo_changed(repo_url, commit_hash)
     with st.expander("RAG: indeksleme (Gemini embedding + Parent-Child)", expanded=False):
         st.caption(
-            "Once repoyu cekin. Indeksleme secilen dosyalarda embedding API cagrisi yapar; "
-            "dosya sayisini dusuk tutmaniz onerilir."
+            "Once repoyu cekin. Parent-child her dosyayi cok parcaya boler; Gemini free tier "
+            "dakikada ~100 embedding istegi sinirlar. Indeksleme yavas olabilir (throttle aktif). "
+            "Ilk denemede max dosya sayisini dusuk tutun (or. 5-10)."
         )
         max_files = st.number_input(
             "Indekslenecek max dosya sayisi",
             min_value=1,
             max_value=80,
-            value=20,
+            value=8,
             step=1,
         )
         if st.button("Indekslemeyi baslat", type="secondary", use_container_width=True):
