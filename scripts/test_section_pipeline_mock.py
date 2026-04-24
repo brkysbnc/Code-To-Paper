@@ -15,16 +15,19 @@ class TestSectionPipelineAdaptiveRetrieval(unittest.TestCase):
     @patch("orchestration.section_pipeline.build_rag_stack_for_repo")
     @patch("orchestration.section_pipeline.index_repository_files")
     @patch("orchestration.section_pipeline._build_gemini_llm")
-    @patch("orchestration.section_pipeline._get_cached_gemini_chat_model_name")
+    @patch("orchestration.section_pipeline._resolve_chat_model_name")
     @patch("orchestration.section_pipeline.generate_planner_queries")
     @patch("orchestration.section_pipeline.retrieve_parent_contexts_multi_query")
     @patch("orchestration.section_pipeline.AcademicWriter")
     def test_adaptive_retrieval_empty_after_retry(
-        self, mock_writer, mock_retrieve, mock_planner, mock_get_model, 
+        self, mock_writer, mock_retrieve, mock_planner, mock_resolve,
         mock_build_llm, mock_index, mock_build_rag
     ):
         # 1. Mock Ayarları
-        mock_index.return_value = {"total_files": 5, "indexed": 5}
+        mock_build_rag.return_value = (MagicMock(), MagicMock(), MagicMock())
+        mock_resolve.return_value = "gemini-test"
+        mock_build_llm.return_value = MagicMock()
+        mock_index.return_value = {"files": 1, "parents": 2, "children": 5}
         mock_planner.return_value = ["mock_query_1"]
         
         # EN ÖNEMLİ KISIM: Retriever'ın sürekli BOŞ dönmesini simüle ediyoruz
@@ -59,7 +62,7 @@ class TestSectionPipelineAdaptiveRetrieval(unittest.TestCase):
         args, kwargs = mock_retrieve.call_args_list[1]
         self.assertAlmostEqual(kwargs["similarity_threshold"], 0.15)
         
-        print("✅ Başarılı: Boş retrieval yakalandı, eşik otomatik düşürülerek tekrar denendi.")
+        print("OK: Bos retrieval, esik dusurme ile iki kez retrieve denendi.")
 
 if __name__ == "__main__":
     unittest.main()
