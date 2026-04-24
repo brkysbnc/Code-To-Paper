@@ -536,11 +536,9 @@ def _render_agent_preview_panel() -> None:
             st.code(q, language="text")
 
     retriever = st.session_state.get("rag_retriever")
-    if retriever is None:
+    if retriever is None and run_mode == "Adim adim":
         st.warning("Multi-query retrieval icin once yukaridaki RAG indekslemesini calistirin.")
-        return
-
-    if run_mode == "Adim adim":
+    elif retriever is not None and run_mode == "Adim adim":
         if st.button("Multi-query retrieval calistir", use_container_width=True):
             queries = st.session_state.get("planner_queries")
             if not queries:
