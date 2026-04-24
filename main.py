@@ -19,6 +19,7 @@ from git.exc import GitCommandError
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from github_handler import clone_and_prepare
+from orchestration.section_pipeline import run_section_pipeline
 from retriever import (
     build_rag_stack_for_repo,
     configure_logging,
@@ -391,31 +392,17 @@ def _render_agent_preview_panel() -> None:
         "Section amaci",
         value="Explain authentication, authorization and token validation flow from code evidence.",
     )
-    if st.button("Planner sorgularini uret", use_container_width=True):
-        try:
-            model_name = _get_cached_gemini_chat_model_name()
-            llm = _build_gemini_llm(model_name)
-            queries = generate_planner_queries(
-                llm,
-                section_title=section_title,
-                section_goal=section_goal,
-                max_queries=6,
-            )
-            st.session_state["planner_queries"] = queries
-            st.success(f"{len(queries)} planner sorgusu uretildi. (model={model_name})")
-        except Exception as e:  # noqa: BLE001
-            st.error(f"Planner calisamadi: {e}")
-            st.warning(_gemini_retry_hint(e))
+    st.caption(
+        "Bu adim embedding + LLM cagrisi yaptigi icin maliyet ve sure olusur. "
+        "Free tier kullaniminda islemler daha yavas ilerleyebilir."
+    )
 
-    if "planner_queries" in st.session_state:
-        st.markdown("**Planner ciktilari**")
-        for q in st.session_state["planner_queries"]:
-            st.code(q, language="text")
-
-    retriever = st.session_state.get("rag_retriever")
-    if retriever is None:
-        st.warning("Multi-query retrieval icin once yukaridaki RAG indekslemesini calistirin.")
-        return
+    run_mode = st.radio(
+        "Calisma modu",
+        options=("Adim adim", "Tek akis"),
+        horizontal=True,
+        help="Adim adim: mevcut butonlarla ilerler. Tek akis: indeks->planner->retrieval->writer tek tikta.",
+    )
 
     st.caption(
         "Benzerlik: Sonuc cok azsa esigi dusurun (or. 0.15). Cok gurultu varsa yukseltin (or. 0.45)."
@@ -436,30 +423,148 @@ def _render_agent_preview_panel() -> None:
         step=1,
         help="Her planner sorgusu icin Chroma'dan cekilecek aday sayisi.",
     )
-    if st.button("Multi-query retrieval calistir", use_container_width=True):
-        queries = st.session_state.get("planner_queries")
-        if not queries:
-            st.error("Once Planner sorgularini uretin.")
-            return
-        with st.spinner("Chroma uzerinde multi-query arama yapiliyor..."):
-            try:
-                docs = retrieve_parent_contexts_multi_query(
-                    retriever,
-                    planner_queries=list(queries),
-                    top_k_per_query=int(top_k_per_query),
-                    similarity_threshold=float(similarity_threshold),
-                )
-                st.session_state["retrieved_parent_docs"] = docs
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"Retrieval hatasi: {exc}")
+    max_index_files = st.number_input(
+        "Tek akis icin indekslenecek max dosya sayisi",
+        min_value=1,
+        max_value=80,
+        value=20,
+        step=1,
+        help="Indeksleme tarafindaki secim mantigi (_pick_paths_for_indexing) ile dosyalar kirpilir.",
+    )
+    max_planner_queries = st.number_input(
+        "Maks planner sorgusu",
+        min_value=1,
+        max_value=12,
+        value=6,
+        step=1,
+    )
+
+    if run_mode == "Tek akis":
+        has_repo = all(
+            st.session_state.get(k) is not None for k in ("paths", "root", "commit", "last_url")
+        )
+        if st.button(
+            "Tek akis calistir (indeks -> planner -> retrieval -> writer)",
+            type="primary",
+            use_container_width=True,
+            disabled=not has_repo,
+        ):
+            if not has_repo:
+                st.error("Once repoyu cekin.")
                 return
-        if not docs:
-            st.warning(
-                "Hic parent baglam secilmedi. Esigi dusurun, top-k artirin veya "
-                "Planner sorgularini bolumle daha uyumlu hale getirip tekrar deneyin."
+            picked = _pick_paths_for_indexing(
+                list(st.session_state.get("paths") or []),
+                int(max_index_files),
             )
-        else:
-            st.success(f"{len(docs)} parent baglam secildi (tekrar eden dosya/satir birlestirildi).")
+            if not picked:
+                st.error("Indeks icin uygun dosya bulunamadi.")
+                return
+
+            status = st.empty()
+            try:
+                os.environ["GEMINI_CHAT_MODEL"] = _get_cached_gemini_chat_model_name()
+                status.info("Indeksleniyor...")
+                status.info("Planner sorgulari uretiliyor...")
+                status.info("Kaynaklar araniyor...")
+                with st.spinner("Bolum yaziliyor..."):
+                    result = run_section_pipeline(
+                        repo_url=str(st.session_state["last_url"]),
+                        commit_hash=str(st.session_state["commit"]),
+                        repo_root=Path(st.session_state["root"]),
+                        paths_for_index=picked,
+                        section_title=section_title,
+                        section_goal=section_goal,
+                        max_index_files=int(max_index_files),
+                        similarity_threshold=float(similarity_threshold),
+                        top_k_per_query=int(top_k_per_query),
+                        max_planner_queries=int(max_planner_queries),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                if "GOOGLE_API_KEY" in str(exc):
+                    st.error("GOOGLE_API_KEY bulunamadi. Proje kokundeki .env dosyasina ekleyin.")
+                    st.info("Ornek: GOOGLE_API_KEY=AIza... (tek satir)")
+                    return
+                st.error(f"Tek akis hatasi: {exc}")
+                st.warning(_gemini_retry_hint(exc))
+                return
+            finally:
+                status.empty()
+
+            if result.get("error"):
+                st.error(
+                    f"Tek akis basarisiz (adim={result.get('failed_step') or 'unknown'}): "
+                    f"{result.get('error')}"
+                )
+                st.warning(_gemini_retry_hint(RuntimeError(str(result.get("error")))))
+                return
+
+            st.session_state["planner_queries"] = list(result.get("planner_queries") or [])
+            st.session_state["retrieved_parent_docs"] = list(result.get("retrieved_parent_docs") or [])
+            st.session_state["writer_draft_en"] = str(result.get("writer_text") or "")
+
+            totals = result.get("rag_totals") or {}
+            st.success(
+                "Tek akis tamamlandi. "
+                f"{totals.get('files', 0)} dosya, {totals.get('parents', 0)} parent, "
+                f"{totals.get('children', 0)} child."
+            )
+            if result.get("retrieval_status") == "empty_after_retry":
+                st.warning(
+                    "Esik dusuruldu, yine sonuc yok; Planner sorgularini veya indeks dosya "
+                    "sayisini gozden gecirin."
+                )
+    else:
+        if st.button("Planner sorgularini uret", use_container_width=True):
+            try:
+                model_name = _get_cached_gemini_chat_model_name()
+                llm = _build_gemini_llm(model_name)
+                queries = generate_planner_queries(
+                    llm,
+                    section_title=section_title,
+                    section_goal=section_goal,
+                    max_queries=int(max_planner_queries),
+                )
+                st.session_state["planner_queries"] = queries
+                st.success(f"{len(queries)} planner sorgusu uretildi. (model={model_name})")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Planner calisamadi: {e}")
+                st.warning(_gemini_retry_hint(e))
+
+    if "planner_queries" in st.session_state:
+        st.markdown("**Planner ciktilari**")
+        for q in st.session_state["planner_queries"]:
+            st.code(q, language="text")
+
+    retriever = st.session_state.get("rag_retriever")
+    if retriever is None:
+        st.warning("Multi-query retrieval icin once yukaridaki RAG indekslemesini calistirin.")
+        return
+
+    if run_mode == "Adim adim":
+        if st.button("Multi-query retrieval calistir", use_container_width=True):
+            queries = st.session_state.get("planner_queries")
+            if not queries:
+                st.error("Once Planner sorgularini uretin.")
+                return
+            with st.spinner("Chroma uzerinde multi-query arama yapiliyor..."):
+                try:
+                    docs = retrieve_parent_contexts_multi_query(
+                        retriever,
+                        planner_queries=list(queries),
+                        top_k_per_query=int(top_k_per_query),
+                        similarity_threshold=float(similarity_threshold),
+                    )
+                    st.session_state["retrieved_parent_docs"] = docs
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Retrieval hatasi: {exc}")
+                    return
+            if not docs:
+                st.warning(
+                    "Hic parent baglam secilmedi. Esigi dusurun, top-k artirin veya "
+                    "Planner sorgularini bolumle daha uyumlu hale getirip tekrar deneyin."
+                )
+            else:
+                st.success(f"{len(docs)} parent baglam secildi (tekrar eden dosya/satir birlestirildi).")
 
     retrieved = st.session_state.get("retrieved_parent_docs")
     if retrieved:
@@ -470,7 +575,10 @@ def _render_agent_preview_panel() -> None:
             el = doc.metadata.get("end_line", "?")
             st.caption(f"{fp}  (satir {sl}-{el})")
 
-    if st.button("Writer: Ingilizce kisa taslak (sadece secilen baglam)", use_container_width=True):
+    if run_mode == "Adim adim" and st.button(
+        "Writer: Ingilizce kisa taslak (sadece secilen baglam)",
+        use_container_width=True,
+    ):
         retrieved_docs = st.session_state.get("retrieved_parent_docs")
         if not retrieved_docs:
             st.error("Once multi-query retrieval calistirin.")
@@ -509,6 +617,13 @@ def _render_agent_preview_panel() -> None:
     if draft:
         st.markdown("**Writer ciktisi (English)**")
         st.markdown(draft)
+        st.download_button(
+            "Taslagi Markdown indir (.md)",
+            data=draft,
+            file_name="section-draft.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
 
 
 def main() -> None:
