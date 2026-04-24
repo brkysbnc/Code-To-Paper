@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 from pathlib import Path
 from typing import Iterable, Set
 
@@ -212,6 +213,34 @@ def iter_indexable_files(
     return sorted(out)
 
 
+def _force_rmtree(path: Path) -> None:
+    """
+    Klon hedef klasorunu agresif sekilde siler.
+
+    Windows'ta salt okunur dosya veya baska surec klasoru acik tuttugunda
+    shutil.rmtree(..., ignore_errors=True) sessizce yarim birakip git clone'in
+    'destination already exists' hatasina yol acabiliyor. Bu yardimci once
+    yazma izni verip tekrar dener; hala silinmezse anlamli OSError firlatir.
+    """
+    if not path.exists():
+        return
+
+    def _on_rm_error(func: object, p: str, _exc_info: object) -> None:
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)  # type: ignore[misc]
+        except OSError:
+            pass
+
+    shutil.rmtree(path, onerror=_on_rm_error)
+    if path.exists():
+        raise OSError(
+            f"Klon klasoru tamamen silinemedi: {path}. "
+            "Baska bir program (IDE, antivirus, Streamlit) bu klasoru kullaniyor olabilir; "
+            "kapatip tekrar deneyin veya yan panelde farkli bir 'Klon klasoru' yazin."
+        )
+
+
 def clone_public_repo(
     github_url: str,
     target_dir: str = "data/source",
@@ -232,9 +261,12 @@ def clone_public_repo(
     Side effect:
         data/fetch_info.txt içine URL ve commit özeti yazılır (izlenebilirlik).
     """
-    target_path = Path(target_dir)
-    if target_path.exists() and any(target_path.iterdir()):
-        shutil.rmtree(target_path, ignore_errors=True)
+    target_path = Path(target_dir).resolve()
+    if target_path.exists():
+        if target_path.is_file():
+            target_path.unlink()
+        elif target_path.is_dir():
+            _force_rmtree(target_path)
     target_path.mkdir(parents=True, exist_ok=True)
 
     repo = Repo.clone_from(github_url, str(target_path))

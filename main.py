@@ -12,6 +12,7 @@ import os
 import time
 from pathlib import Path
 
+from agents.writer import AcademicWriter
 import streamlit as st
 from dotenv import load_dotenv
 from google import genai
@@ -248,14 +249,15 @@ def _render_rag_indexing_section(
     _sync_rag_session_if_repo_changed(repo_url, commit_hash)
     with st.expander("RAG: indeksleme (Gemini embedding + Parent-Child)", expanded=False):
         st.caption(
-            "Once repoyu cekin. Indeksleme secilen dosyalarda embedding API cagrisi yapar; "
-            "dosya sayisini dusuk tutmaniz onerilir."
+            "Once repoyu cekin. Parent-child her dosyayi cok parcaya boler; Gemini free tier "
+            "dakikada ~100 embedding istegi sinirlar. Indeksleme yavas olabilir (throttle aktif). "
+            "Ilk denemede max dosya sayisini dusuk tutun (or. 5-10)."
         )
         max_files = st.number_input(
             "Indekslenecek max dosya sayisi",
             min_value=1,
             max_value=80,
-            value=20,
+            value=8,
             step=1,
         )
         if st.button("Indekslemeyi baslat", type="secondary", use_container_width=True):
@@ -573,43 +575,39 @@ def _render_agent_preview_panel() -> None:
             el = doc.metadata.get("end_line", "?")
             st.caption(f"{fp}  (satir {sl}-{el})")
 
+    st.markdown("---")
+    st.markdown("##### Writer modulu (IEEE + Mermaid)")
+
     if run_mode == "Adim adim" and st.button(
-        "Writer: Ingilizce kisa taslak (sadece secilen baglam)",
+        "Writer: Ingilizce bolum (IEEE + Mermaid)",
         use_container_width=True,
     ):
         retrieved_docs = st.session_state.get("retrieved_parent_docs")
         if not retrieved_docs:
             st.error("Once multi-query retrieval calistirin.")
-            return
-        context_parts: list[str] = []
-        for doc in retrieved_docs[:10]:
-            fp = str(doc.metadata.get("file_path", "unknown"))
-            sl = doc.metadata.get("start_line", -1)
-            el = doc.metadata.get("end_line", -1)
-            body = (doc.page_content or "")[:6000]
-            context_parts.append(f"[{fp} lines {sl}-{el}]\n{body}")
-        context_blob = "\n\n---\n\n".join(context_parts)
-        model_name = _get_cached_gemini_chat_model_name()
-        llm = _build_gemini_llm(model_name)
-        writer_prompt = (
-            "You are writing ONE section of an IEEE-style software architecture paper in English.\n"
-            f"Section title: {section_title}\n"
-            "Rules:\n"
-            "- Use ONLY the evidence in CONTEXT below. Do not invent libraries, products, or features not shown.\n"
-            "- Academic tone, third person, concise (about 250-400 words).\n"
-            "- Cite sources inline like (path:lines).\n"
-            "- If context is insufficient, say explicitly what is missing.\n\n"
-            f"CONTEXT:\n{context_blob}"
-        )
-        with st.spinner("Writer (Gemini) calisiyor..."):
-            try:
-                draft = _invoke_gemini_chat_with_retry(llm, writer_prompt)
-                st.session_state["writer_draft_en"] = draft
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"Writer hatasi: {exc}")
-                st.warning(_gemini_retry_hint(exc))
-                return
-        st.success("Taslak uretildi.")
+        else:
+            model_name = _get_cached_gemini_chat_model_name()
+            llm = _build_gemini_llm(model_name)
+
+            def safe_invoke(prompt_text: str) -> str:
+                """Bu tiklamaya ozel LLM oturumu ile invoke; retry str dondurur (.content yok)."""
+                return _invoke_gemini_chat_with_retry(llm, prompt_text)
+
+            writer = AcademicWriter(llm_invoke_func=safe_invoke)
+            with st.spinner("Makale bolumu yaziliyor..."):
+                result = writer.generate_section(
+                    section_title=section_title,
+                    section_goal=section_goal,
+                    parent_documents=list(retrieved_docs),
+                    max_parents=10,
+                )
+            if result["metadata"]["status"] == "success":
+                st.session_state["writer_draft_en"] = result["text"]
+                st.success(
+                    f"Taslak olusturuldu. ({result['metadata']['parents_used']} kaynak parca kullanildi.)"
+                )
+            else:
+                st.error(result["text"])
 
     draft = st.session_state.get("writer_draft_en")
     if draft:
