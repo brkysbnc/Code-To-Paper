@@ -183,30 +183,51 @@ def extract_author_block_elements(doc: DocumentObject) -> list:
     return author_elements
 
 
-def make_continuous_sectpr_two_columns(space_twips: int = 360):
+def make_continuous_sectpr_two_columns(space_twips: int = 360, template_sectpr=None):
     """type=continuous + cols num=2 olan yeni bir w:sectPr olusturur (govde 2-sutun gecisi)."""
     sectpr = OxmlElement("w:sectPr")
+    
+    if template_sectpr is not None:
+        from copy import deepcopy
+        for tag in ["w:pgSz", "w:pgMar"]:
+            el = template_sectpr.find(qn(tag))
+            if el is not None:
+                sectpr.append(deepcopy(el))
+
     type_el = OxmlElement("w:type")
     type_el.set(qn("w:val"), "continuous")
     sectpr.append(type_el)
+    
     cols = OxmlElement("w:cols")
     cols.set(qn("w:num"), "2")
     cols.set(qn("w:space"), str(space_twips))
     cols.set(qn("w:equalWidth"), "1")
     sectpr.append(cols)
+    
     return sectpr
 
 
-def make_continuous_sectpr_single_column():
-    """type=continuous + cols num=1 olan yeni bir w:sectPr olusturur (title/author 1-sutun kapanisi)."""
+def make_continuous_sectpr_single_column(template_sectpr=None):
+    """type=continuous + cols num=1 olan yeni bir w:sectPr olusturur."""
     sectpr = OxmlElement("w:sectPr")
+    
+    if template_sectpr is not None:
+        from copy import deepcopy
+        from docx.oxml.ns import qn
+        for tag in ["w:pgSz", "w:pgMar"]:
+            el = template_sectpr.find(qn(tag))
+            if el is not None:
+                sectpr.append(deepcopy(el))
+
     type_el = OxmlElement("w:type")
     type_el.set(qn("w:val"), "continuous")
     sectpr.append(type_el)
+    
     cols = OxmlElement("w:cols")
     cols.set(qn("w:num"), "1")
     cols.set(qn("w:space"), "360")
     sectpr.append(cols)
+    
     return sectpr
 
 
@@ -334,14 +355,15 @@ def write_markdown_with_ieee_styles(
         # 1-col continuous: title+author sectionunu kapat.
         p_close = OxmlElement("w:p")
         p_close_ppr = OxmlElement("w:pPr")
-        p_close_ppr.append(make_continuous_sectpr_single_column())
+        p_close_ppr.append(make_continuous_sectpr_single_column(template_sectpr=final_sectpr))
         p_close.append(p_close_ppr)
         _insert_before_final(p_close)
 
         # 2-col continuous: Abstract/Keywords/Bolumlerin yer alacagi 2-sutun sectionu ac.
         p_open = OxmlElement("w:p")
         p_open_ppr = OxmlElement("w:pPr")
-        p_open_ppr.append(make_continuous_sectpr_two_columns(360))
+        template_s_pr = doc.element.body.sectPr
+        p_open_ppr.append(make_continuous_sectpr_two_columns(360, template_sectpr=final_sectpr))
         p_open.append(p_open_ppr)
         _insert_before_final(p_open)
     else:
