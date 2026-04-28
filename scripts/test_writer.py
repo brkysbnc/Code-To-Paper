@@ -13,15 +13,23 @@ def mock_invoke(prompt: str) -> str:
         return "Insufficient evidence in the repository to fully detail this section."
     
     return """
+PART 1 — PAPER BODY
 ### Architecture Overview
-This section explains the core design.
+This section explains the core design [1].
 
-### Diagram
+### Mermaid snapshot
 ```mermaid
 graph TD
-    A[main.py] --> B[database.py]
+    A[App] --> B[Database]
 ```
-(src/main.py:10-20)
+
+PART 2 — REFERENCES
+[1] Example, "Repository," GitHub, 2026. [Online]. Available: https://example.com/repo
+
+PART 3 — TRACEABILITY
+TRACEABILITY:
+| Claim ID | Claim summary | Source file | Lines | Notes |
+| C-01 | Design | src/database.py | 5-10 | ok |
 """
 
 def run_tests():

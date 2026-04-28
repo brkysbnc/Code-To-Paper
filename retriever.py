@@ -41,6 +41,19 @@ except ImportError:  # pragma: no cover - geriye dönük uyumluluk
     except ImportError:  # pragma: no cover - LangChain 1.x
         from langchain_classic.storage import InMemoryStore
 
+# Parent dokumanlari diske yazip oturumlar arasi kalici tutmak icin LocalFileStore.
+# LangChain >=1.x'te `langchain.storage` paketi kaldirildi; classic paketi kullaniyoruz.
+try:
+    from langchain_classic.storage import LocalFileStore
+    from langchain_classic.storage._lc_store import create_kv_docstore
+except ImportError:  # pragma: no cover - eski versiyonlar
+    try:
+        from langchain.storage import LocalFileStore
+        from langchain.storage._lc_store import create_kv_docstore
+    except ImportError:  # pragma: no cover
+        LocalFileStore = None  # type: ignore[assignment]
+        create_kv_docstore = None  # type: ignore[assignment]
+
 try:
     # Ayrı paket kuruluysa bunu kullan.
     from langchain_chroma import Chroma
@@ -52,17 +65,21 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 LOGGER = logging.getLogger(__name__)
 
-# Free tier: gemini-embedding dakikada ~100 istek; parent-child cok child uretir.
+# Free tier: gemini-embedding dakikada ~100 istek (per-request).
+# Onemli: batchEmbedContents tek istek sayilir; o yuzden kucuk batch'lerle gonderirsek
+# kota cok daha geç dolar. Tek tek gondermek free-tier'i hizla yakar.
 _DEFAULT_EMBED_MIN_INTERVAL_S = 0.62
+_DEFAULT_EMBED_BATCH_SIZE = 100
 
 
 class ThrottledGeminiEmbeddings(Embeddings):
     """
-    Gemini embedding cagrilarini siralar ve istekler arasinda bekler.
+    Gemini embedding cagrilarini batch'leyip istekler arasinda bekler.
 
-    Parent-child indekslemede tek dosya yuzlerce child uretebilir; Google
-    free tier 429 verir. Bu sarmalayici embed_documents icinde metinleri tek
-    tek (veya kisa aralikla) gondererek dakika kotasinin altinda kalir.
+    Onceki surum: her metin icin ayri embed_documents([text]) cagriyordu;
+    free-tier'da N child = N HTTP istegi -> kota hizli dolar. Yeni surum:
+    metinleri batch_size'lik gruplara bolup tek istekle gonderir; her batch
+    arasinda min_interval_s kadar bekler. Toplam istek sayisi ~ N / batch_size.
     """
 
     def __init__(
@@ -70,37 +87,45 @@ class ThrottledGeminiEmbeddings(Embeddings):
         inner: GoogleGenerativeAIEmbeddings,
         *,
         min_interval_s: float = _DEFAULT_EMBED_MIN_INTERVAL_S,
+        batch_size: int = _DEFAULT_EMBED_BATCH_SIZE,
     ) -> None:
         self._inner = inner
         self._min_interval_s = max(0.05, float(min_interval_s))
+        self._batch_size = max(1, int(batch_size))
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Her metin icin ayri embedding + istekler arasi bekleme ve 429 retry."""
+        """Metinleri batch_size'lik gruplara bolup tek istekle yollar; gruplar arasi throttle uygulanir."""
         if not texts:
             return []
         out: list[list[float]] = []
-        for i, text in enumerate(texts):
-            if i > 0:
+        total = len(texts)
+        for start in range(0, total, self._batch_size):
+            if start > 0:
                 time.sleep(self._min_interval_s)
-            out.append(self._embed_one_with_retry(text))
+            batch = list(texts[start : start + self._batch_size])
+            out.extend(self._embed_batch_with_retry(batch))
         return out
 
     def embed_query(self, text: str) -> list[float]:
-        """Sorgu embeddingi; ayni kota icin kisa throttle uygulanir."""
+        """Sorgu embeddingi; tek metin -> tek istek (kucuk throttle ile)."""
         time.sleep(self._min_interval_s)
-        return self._embed_one_with_retry(text)
+        return self._embed_batch_with_retry([text])[0]
 
-    def _embed_one_with_retry(self, text: str) -> list[float]:
-        """429/resource_exhausted durumunda ussel geri cekilme ile tekrar dener."""
+    def _embed_batch_with_retry(self, batch: list[str]) -> list[list[float]]:
+        """Bir batch icin embed_documents cagrisini 429/503'e karsi sinirli retry ile yapar."""
+        if not batch:
+            return []
         delay_s = 2.0
         last_exc: BaseException | None = None
         for attempt in range(10):
             try:
-                vec = self._inner.embed_documents([text])
-                return list(vec[0])
+                vecs = self._inner.embed_documents(list(batch))
+                return [list(v) for v in vecs]
             except BaseException as exc:  # noqa: BLE001
                 last_exc = exc
                 err = str(exc).lower()
+                # Quota/HTTP geri itmesi + Windows DNS/socket hicotsu (getaddrinfo) ve
+                # genel baglanti kopukluklarini (connection reset/aborted) retryable kabul ediyoruz.
                 retryable = any(
                     x in err
                     for x in (
@@ -109,13 +134,19 @@ class ThrottledGeminiEmbeddings(Embeddings):
                         "quota",
                         "503",
                         "unavailable",
+                        "deadline",
+                        "timeout",
+                        "getaddrinfo",
+                        "connection",
+                        "temporary failure",
                     )
                 )
                 if not retryable or attempt == 9:
                     raise
                 LOGGER.warning(
-                    "Embedding gecici hata (deneme %s/10), %.1fs bekleniyor: %s",
+                    "Embedding batch gecici hata (deneme %s/10, n=%s), %.1fs bekleniyor: %s",
                     attempt + 1,
+                    len(batch),
                     delay_s,
                     exc,
                 )
@@ -173,6 +204,38 @@ def build_gemini_embeddings(
     return GoogleGenerativeAIEmbeddings(model=model, google_api_key=api_key)
 
 
+def _resolve_repo_persist_dir(repo_url: str, commit_hash: str) -> tuple[Path, str]:
+    """
+    repo_url + commit_hash'ten deterministik bir token uretip Chroma kalici dizinini dondurur.
+
+    Ayni repo + commit icin ayni dizin; commit degisirse yeni dizin (otomatik invalidation).
+    """
+    token = hashlib.sha256(f"{repo_url}|{commit_hash}".encode("utf-8")).hexdigest()[:16]
+    persist_dir = Path("data/chroma_rag") / token
+    persist_dir.mkdir(parents=True, exist_ok=True)
+    return persist_dir, token
+
+
+def is_repo_already_indexed(persist_dir: Path | str) -> bool:
+    """
+    Verilen dizinde Chroma + parent docstore birlikte hazir mi kontrol eder.
+
+    Yeniden embeddinge girmemek icin: hem children koleksiyonu hem parent diskstore dolu olmali.
+    Aksi halde retrieval'da parent_id var ama mget bos doner; bu yari-bos durum kullanilamaz.
+    """
+    p = Path(persist_dir)
+    chroma_marker = p / "chroma.sqlite3"
+    docstore_dir = p / "docstore"
+    if not chroma_marker.is_file():
+        return False
+    if not docstore_dir.is_dir():
+        return False
+    try:
+        return any(docstore_dir.iterdir())
+    except OSError:
+        return False
+
+
 def build_rag_stack_for_repo(
     repo_url: str,
     commit_hash: str,
@@ -183,11 +246,10 @@ def build_rag_stack_for_repo(
     Belirli repo+commit icin izole Chroma dizini ve retriever stack'i kurar.
 
     Ayni repoyu tekrar indekslerken farkli koleksiyon/dizin carpismasin diye
-    URL ve commit hash'ten kisa bir token uretilir.
+    URL ve commit hash'ten kisa bir token uretilir. Parent dokumanlari LocalFileStore
+    icinde diske yazilir; sonraki oturum/cagriya hazir kalir (free-tier embed kotasini korur).
     """
-    token = hashlib.sha256(f"{repo_url}|{commit_hash}".encode("utf-8")).hexdigest()[:16]
-    persist_dir = Path("data/chroma_rag") / token
-    persist_dir.mkdir(parents=True, exist_ok=True)
+    persist_dir, token = _resolve_repo_persist_dir(repo_url, commit_hash)
     base_embeddings = build_gemini_embeddings(model=embedding_model)
     # Free tier: cok sayida child = cok embed; istekleri seyrelt
     if os.getenv("GEMINI_EMBED_NO_THROTTLE", "").strip().lower() in {"1", "true", "yes"}:
@@ -198,11 +260,23 @@ def build_rag_stack_for_repo(
             min_iv = float(raw_iv) if raw_iv else _DEFAULT_EMBED_MIN_INTERVAL_S
         except ValueError:
             min_iv = _DEFAULT_EMBED_MIN_INTERVAL_S
-        embeddings = ThrottledGeminiEmbeddings(base_embeddings, min_interval_s=min_iv)
+        raw_bs = os.getenv("GEMINI_EMBED_BATCH_SIZE", str(_DEFAULT_EMBED_BATCH_SIZE)).strip()
+        try:
+            bs = int(raw_bs) if raw_bs else _DEFAULT_EMBED_BATCH_SIZE
+        except ValueError:
+            bs = _DEFAULT_EMBED_BATCH_SIZE
+        embeddings = ThrottledGeminiEmbeddings(
+            base_embeddings,
+            min_interval_s=min_iv,
+            batch_size=bs,
+        )
+    docstore_dir = persist_dir / "docstore"
+    docstore_dir.mkdir(parents=True, exist_ok=True)
     return build_parent_child_retriever(
         embeddings,
         collection_name=f"code_pc_{token}",
         persist_directory=str(persist_dir),
+        docstore_dir=str(docstore_dir),
     )
 
 
@@ -356,12 +430,16 @@ def build_parent_child_retriever(
     parent_chunk_overlap: int = DEFAULT_PARENT_CHUNK_OVERLAP,
     child_chunk_size: int = DEFAULT_CHILD_CHUNK_SIZE,
     child_chunk_overlap: int = DEFAULT_CHILD_CHUNK_OVERLAP,
+    docstore_dir: str | None = None,
 ):
     """
-    Chroma + InMemoryStore + ParentDocumentRetriever yapısını kurar.
+    Chroma + (LocalFileStore || InMemoryStore) + ParentDocumentRetriever yapısını kurar.
+
+    docstore_dir verilirse parent dokumanlari diske yazilir ve oturumlar arasi tasinir
+    (free-tier embedding kotasini korumak icin gerekli; aksi halde her restart yeniden embedding ister).
 
     Returns:
-        tuple[ParentDocumentRetriever, InMemoryStore, Chroma]
+        tuple[ParentDocumentRetriever, store, Chroma]
     """
     parent_splitter = RecursiveCharacterTextSplitter(
         chunk_size=parent_chunk_size,
@@ -379,7 +457,10 @@ def build_parent_child_retriever(
         embedding_function=embeddings,
         persist_directory=persist_directory,
     )
-    store = InMemoryStore()
+    if docstore_dir and LocalFileStore is not None and create_kv_docstore is not None:
+        store = create_kv_docstore(LocalFileStore(docstore_dir))
+    else:
+        store = InMemoryStore()
 
     retriever = ParentDocumentRetriever(
         vectorstore=vectorstore,
@@ -458,6 +539,33 @@ def _estimate_parent_child_counts(
     return len(parent_docs), child_count
 
 
+def _vectorstore_has_documents(vectorstore: Chroma) -> bool:
+    """Chroma koleksiyonunda en az bir embedding var mi kontrol eder."""
+    try:
+        n = int(vectorstore._collection.count())  # type: ignore[attr-defined]
+        return n > 0
+    except Exception:  # noqa: BLE001
+        try:
+            sample = vectorstore.get(limit=1)
+            return bool(sample and sample.get("ids"))
+        except Exception:  # noqa: BLE001
+            return False
+
+
+def _docstore_has_keys(docstore) -> bool:
+    """Parent docstore'da kayitli en az bir parent_id var mi kontrol eder."""
+    try:
+        # KV docstore (LocalFileStore tabanli) yield_keys destekler.
+        for _ in docstore.yield_keys():
+            return True
+    except Exception:  # noqa: BLE001
+        try:
+            return bool(getattr(docstore, "store", {}))
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
+
 def index_repository_files(
     retriever: ParentDocumentRetriever,
     file_paths: Iterable[str | Path],
@@ -469,15 +577,50 @@ def index_repository_files(
     parent_chunk_overlap: int = DEFAULT_PARENT_CHUNK_OVERLAP,
     child_chunk_size: int = DEFAULT_CHILD_CHUNK_SIZE,
     child_chunk_overlap: int = DEFAULT_CHILD_CHUNK_OVERLAP,
+    skip_if_indexed: bool = True,
 ) -> dict[str, int]:
     """
     Verilen repository dosyalarını parent-child retrieval mimarisiyle indeksler.
+
+    skip_if_indexed=True (varsayilan): Chroma koleksiyonu + docstore zaten dolu ise
+    yeniden indekslemez (free-tier embedding kotasini korur). Sayilar 'reused' olarak
+    isaretlenir; gercek toplamlar Chroma uzerinden tahmin edilir.
 
     Logging çıktısı sayesinde her dosyanın kaç parent ve child parçaya ayrıldığı
     konsolda görülebilir.
     """
     repo_root_path = Path(repo_root).resolve()
-    totals = {"files": 0, "parents": 0, "children": 0}
+    totals = {"files": 0, "parents": 0, "children": 0, "reused": 0}
+
+    if skip_if_indexed:
+        try:
+            vs_has = _vectorstore_has_documents(retriever.vectorstore)
+            ds_has = _docstore_has_keys(retriever.docstore)
+        except Exception:  # noqa: BLE001
+            vs_has, ds_has = False, False
+        if vs_has and ds_has:
+            try:
+                n_children = int(retriever.vectorstore._collection.count())  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                n_children = 0
+            n_parents = 0
+            try:
+                for _ in retriever.docstore.yield_keys():
+                    n_parents += 1
+            except Exception:  # noqa: BLE001
+                n_parents = 0
+            totals.update({
+                "files": 0,
+                "parents": n_parents,
+                "children": n_children,
+                "reused": 1,
+            })
+            LOGGER.info(
+                "Mevcut indeks yeniden kullaniliyor (parent=%s, child=%s); embedding atlandi.",
+                n_parents,
+                n_children,
+            )
+            return totals
 
     for raw_path in file_paths:
         file_path = Path(raw_path).resolve()
@@ -553,6 +696,52 @@ def query_context(
     return documents
 
 
+def heuristic_planner_queries(
+    *,
+    section_title: str,
+    section_goal: str,
+    max_queries: int = 6,
+) -> list[str]:
+    """
+    LLM cagirmadan (free-tier dostu) deterministic planner sorgulari uretir.
+
+    Section title kendisi bir sorgu; section goal cumle/cesitli ayraclarla parcalanir;
+    cok kisa ve duplikat parcalar elenir. Planner LLM cagrisi olmadigi icin tam makalede
+    bolum basina 1 LLM cagrisi (sadece Writer) kalir.
+    """
+    import re as _re
+
+    queries: list[str] = []
+    title = (section_title or "").strip()
+    goal = (section_goal or "").strip()
+
+    if title:
+        queries.append(title)
+    if goal:
+        queries.append(goal)
+
+    parts = _re.split(r"[.;:\n]+|,\s+", goal)
+    for raw in parts:
+        token_text = raw.strip().strip("-•\t ")
+        if len(token_text) >= 12:
+            queries.append(token_text)
+
+    if title and goal:
+        queries.append(f"{title}: {goal[:160]}".strip())
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for q in queries:
+        key = q.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(q)
+    if not deduped:
+        deduped = [title or "implementation"]
+    return deduped[: max(1, int(max_queries))]
+
+
 def generate_planner_queries(
     llm: BaseChatModel,
     *,
@@ -565,9 +754,21 @@ def generate_planner_queries(
     """
     Planner ajanı için section bazlı çoklu teknik sorgu üretir.
 
+    Varsayilan: free-tier kotasini korumak icin LLM cagrisi YAPILMAZ; deterministic
+    heuristic_planner_queries kullanilir. Eski davranisi geri istemek icin
+    .env icine `GEMINI_PLANNER_LLM=1` koy.
+
     Gemini tarafinda 503/429 gibi gecici hatalar icin sinirli retry + exponential
     backoff uygulanir (Is 4b: API dayanikliligi).
     """
+    use_llm = os.getenv("GEMINI_PLANNER_LLM", "").strip().lower() in {"1", "true", "yes"}
+    if not use_llm:
+        return heuristic_planner_queries(
+            section_title=section_title,
+            section_goal=section_goal,
+            max_queries=max_queries,
+        )
+
     prompt = (
         "You are a retrieval planner for software architecture analysis.\n"
         f"Section title: {section_title}\n"
@@ -597,6 +798,9 @@ def generate_planner_queries(
                     "quota",
                     "deadline",
                     "timeout",
+                    "getaddrinfo",
+                    "connection",
+                    "temporary failure",
                 )
             )
             if not retryable or attempt == max_llm_attempts - 1:

@@ -8,6 +8,7 @@ multi-query retrieval bu ekrandan tetiklenebilir.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -20,7 +21,22 @@ from git.exc import GitCommandError
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from github_handler import clone_and_prepare
-from orchestration.section_pipeline import run_section_pipeline
+from agents.literature_filter import (
+    extract_pdf_text_to_string,
+    filter_literature_relevance,
+    format_approved_for_writer,
+    split_pasted_literature,
+)
+from agents.ieee_json_schema import normalize_ieee_paper_content, parse_ieee_paper_json
+from agents.ieee_json_writer import generate_ieee_paper_json_raw
+from export.ieee_document_from_json import build_ieee_document_bytes
+from export.ieee_template_export import (
+    markdown_to_ieee_template_docx_bytes,
+    resolve_default_ieee_template,
+)
+from export.word_export import markdown_to_docx_bytes
+from orchestration.paper_blueprint import DEFAULT_PAPER_SECTIONS
+from orchestration.section_pipeline import run_paper_pipeline, run_section_pipeline
 from retriever import (
     build_rag_stack_for_repo,
     configure_logging,
@@ -50,11 +66,12 @@ _INDEX_SUFFIX_PRIORITY = (
     ".json",
     ".toml",
 )
-_DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+_DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 _GEMINI_FALLBACK_MODELS = (
+    "gemini-3.1-flash-lite-preview",
+    "gemini-2.5-flash-lite",
     "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
+    "gemini-flash-lite-latest",
 )
 
 
@@ -382,6 +399,26 @@ def _render_sidebar() -> str:
     return target_dir
 
 
+def _build_docx_from_markdown(md: str) -> tuple[bytes, str]:
+    """
+    IEEE Word sablonunun uzerine yazar; sablon yoksa veya hata olursa duz .docx uretir.
+
+    Sablon yolu: `ieee_template_path_input` oturumu, sonra IEEE_DOCX_TEMPLATE, sonra
+    docs/templates/ConferenceTemplateIEEE.docx.
+    """
+    custom = str(st.session_state.get("ieee_template_path_input") or "").strip()
+    path: Path | None = Path(custom) if custom else None
+    if path is not None and not path.is_file():
+        path = None
+    path = path or resolve_default_ieee_template()
+    if path is None:
+        return markdown_to_docx_bytes(md), "IEEE sablonu bulunamadi; duz Word kullanildi."
+    try:
+        return markdown_to_ieee_template_docx_bytes(path, md), f"IEEE sablonu kullanildi: {path}"
+    except Exception as exc:  # noqa: BLE001
+        return markdown_to_docx_bytes(md), f"Sablon acilamadi ({exc}); duz Word kullanildi."
+
+
 def _render_agent_preview_panel() -> None:
     """
     Planner + (istege bagli) multi-query retrieval + Ingilizce writer taslagini test eder.
@@ -394,6 +431,72 @@ def _render_agent_preview_panel() -> None:
         "Section amaci",
         value="Explain authentication, authorization and token validation flow from code evidence.",
     )
+
+    with st.expander("Literatur ve ek yazim talimatlari (istege bagli)", expanded=False):
+        st.caption(
+            "Literatur: metin yapistirin ve/veya PDF yukleyin; 'Surzgec' mevcut bolum basligi/amacina gore "
+            "alakasiz parcalari eler. Writer sadece onaylanan metni [2],[3],... olarak kullanir."
+        )
+        st.text_area(
+            "Ek yazim talimatlari (OPERATOR_ADDENDUM)",
+            height=72,
+            key="writer_extra_rules_input",
+            placeholder="Ornek: passive voice; avoid first person; max 800 words for PART 1.",
+        )
+        st.text_area(
+            "Literatur metni (parcalari ayirmak icin satira sadece --- yazin; istege bagli ilk satir: Title: ...)",
+            height=140,
+            key="literature_paste_bundle",
+            placeholder="Title: Related survey excerpt\n...\n---\nTitle: Second source\n...",
+        )
+        lit_pdfs = st.file_uploader(
+            "PDF literatur (coklu)",
+            type=["pdf"],
+            accept_multiple_files=True,
+        )
+        if st.button("Literaturu LLM ile surzgecten gecir", type="secondary"):
+            lit_items: list[tuple[str, str]] = list(
+                split_pasted_literature(str(st.session_state.get("literature_paste_bundle") or ""))
+            )
+            if lit_pdfs:
+                for up in lit_pdfs:
+                    try:
+                        try:
+                            raw_b = up.getvalue()
+                        except AttributeError:
+                            raw_b = up.read()
+                        lit_items.append((up.name, extract_pdf_text_to_string(raw_b)))
+                    except Exception as pdf_exc:  # noqa: BLE001
+                        st.error(f"PDF okunamadi ({up.name}): {pdf_exc}")
+            if not lit_items:
+                st.warning("Surzgec icin en az bir metin parcasi veya PDF ekleyin.")
+            else:
+                try:
+                    model_name = _get_cached_gemini_chat_model_name()
+                    llm_lit = _build_gemini_llm(model_name)
+
+                    def _lit_invoke(prompt_text: str) -> str:
+                        return _invoke_gemini_chat_with_retry(llm_lit, prompt_text)
+
+                    approved, excluded = filter_literature_relevance(
+                        _lit_invoke,
+                        section_title=section_title,
+                        section_goal=section_goal,
+                        repository_hint=str(st.session_state.get("last_url") or ""),
+                        items=lit_items,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Literatur surzgec hatasi: {exc}")
+                    st.warning(_gemini_retry_hint(exc))
+                else:
+                    st.session_state["literature_writer_block"] = format_approved_for_writer(approved)
+                    st.session_state["literature_filter_excluded"] = excluded
+                    st.success(f"Surzgec tamam: {len(approved)} parca Writer'a verilecek, {len(excluded)} elendi.")
+                    if excluded:
+                        with st.expander("Elenen parcalar"):
+                            for row in excluded:
+                                st.caption(f"#{row.get('index')}: {row.get('reason')}")
+
     st.caption(
         "Bu adim embedding + LLM cagrisi yaptigi icin maliyet ve sure olusur. "
         "Free tier kullaniminda islemler daha yavas ilerleyebilir."
@@ -401,10 +504,16 @@ def _render_agent_preview_panel() -> None:
 
     run_mode = st.radio(
         "Calisma modu",
-        options=("Adim adim", "Tek akis"),
+        options=("Adim adim", "Tek akis", "Tam makale (coklu bolum)"),
         horizontal=True,
-        help="Adim adim: mevcut butonlarla ilerler. Tek akis: indeks->planner->retrieval->writer tek tikta.",
+        help="Adim adim: adim adim. Tek akis: tek bolum. Tam makale: bir indeks, ardışık 3 bolum (daha fazla LLM cagrisi).",
     )
+    if run_mode == "Tam makale (coklu bolum)":
+        st.caption(
+            "Tam makale: "
+            + " · ".join(t for t, _ in DEFAULT_PAPER_SECTIONS)
+            + " — her bolum icin planner + retrieval + writer calisir."
+        )
 
     st.caption(
         "Benzerlik: Sonuc cok azsa esigi dusurun (or. 0.15). Cok gurultu varsa yukseltin (or. 0.45)."
@@ -441,7 +550,99 @@ def _render_agent_preview_panel() -> None:
         step=1,
     )
 
-    if run_mode == "Tek akis":
+    _extra_rules = str(st.session_state.get("writer_extra_rules_input") or "").strip()
+    _lit_block = str(st.session_state.get("literature_writer_block") or "").strip()
+
+    if run_mode == "Tam makale (coklu bolum)":
+        has_repo = all(
+            st.session_state.get(k) is not None for k in ("paths", "root", "commit", "last_url")
+        )
+        if st.button(
+            "Tam makale: indeks + 3 bolum (planner / retrieval / writer x3)",
+            type="primary",
+            use_container_width=True,
+            disabled=not has_repo,
+        ):
+            if not has_repo:
+                st.error("Once repoyu cekin.")
+                return
+            picked = _pick_paths_for_indexing(
+                list(st.session_state.get("paths") or []),
+                int(max_index_files),
+            )
+            if not picked:
+                st.error("Indeks icin uygun dosya bulunamadi.")
+                return
+            status = st.empty()
+            try:
+                os.environ["GEMINI_CHAT_MODEL"] = _get_cached_gemini_chat_model_name()
+                status.info("Tam makale pipeline basladi (uzun surebilir)...")
+                with st.spinner("Indeks + 3 bolum yaziliyor..."):
+                    paper_result = run_paper_pipeline(
+                        repo_url=str(st.session_state["last_url"]),
+                        commit_hash=str(st.session_state["commit"]),
+                        repo_root=Path(st.session_state["root"]),
+                        paths_for_index=picked,
+                        sections=None,
+                        max_index_files=int(max_index_files),
+                        similarity_threshold=float(similarity_threshold),
+                        top_k_per_query=int(top_k_per_query),
+                        max_planner_queries=int(max_planner_queries),
+                        writer_extra_rules=_extra_rules,
+                        user_literature_block=_lit_block,
+                        existing_retriever=st.session_state.get("rag_retriever"),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                if "GOOGLE_API_KEY" in str(exc):
+                    st.error("GOOGLE_API_KEY bulunamadi. Proje kokundeki .env dosyasina ekleyin.")
+                    st.info("Ornek: GOOGLE_API_KEY=AIza... (tek satir)")
+                    return
+                st.error(f"Tam makale hatasi: {exc}")
+                st.warning(_gemini_retry_hint(exc))
+                return
+            finally:
+                status.empty()
+
+            if paper_result.get("error"):
+                st.error(
+                    f"Tam makale basarisiz (adim={paper_result.get('failed_step') or 'unknown'}): "
+                    f"{paper_result.get('error')}"
+                )
+                if paper_result.get("failed_section_index") is not None:
+                    st.caption(
+                        f"Hata bolum indeksi: {paper_result.get('failed_section_index')} "
+                        "(kismi cikti asagida olabilir)."
+                    )
+                st.warning(_gemini_retry_hint(RuntimeError(str(paper_result.get("error")))))
+            else:
+                totals = paper_result.get("rag_totals") or {}
+                n_sec = len(paper_result.get("sections") or [])
+                st.success(
+                    f"Tam makale tamamlandi (bolum sayisi={n_sec}). "
+                    f"{totals.get('files', 0)} dosya indekslendi."
+                )
+            for sb in paper_result.get("sections") or []:
+                rs = sb.get("retrieval_status")
+                if rs in ("empty_after_retry",):
+                    st.warning(
+                        f"Bolum '{sb.get('section_title')}': retrieval sonuc bos olabilir "
+                        f"({rs})."
+                    )
+            combined = str(paper_result.get("combined_markdown") or "").strip()
+            if combined:
+                st.session_state["full_paper_combined_md"] = combined
+            st.session_state["paper_pipeline_sections"] = list(
+                paper_result.get("sections") or []
+            )
+            if paper_result.get("sections"):
+                st.session_state["writer_draft_en"] = str(
+                    paper_result["sections"][-1].get("writer_text") or ""
+                )
+                st.session_state["writer_metadata"] = dict(
+                    paper_result["sections"][-1].get("writer_metadata") or {}
+                )
+
+    elif run_mode == "Tek akis":
         has_repo = all(
             st.session_state.get(k) is not None for k in ("paths", "root", "commit", "last_url")
         )
@@ -480,6 +681,9 @@ def _render_agent_preview_panel() -> None:
                         similarity_threshold=float(similarity_threshold),
                         top_k_per_query=int(top_k_per_query),
                         max_planner_queries=int(max_planner_queries),
+                        writer_extra_rules=_extra_rules,
+                        user_literature_block=_lit_block,
+                        existing_retriever=st.session_state.get("rag_retriever"),
                     )
             except Exception as exc:  # noqa: BLE001
                 if "GOOGLE_API_KEY" in str(exc):
@@ -577,6 +781,100 @@ def _render_agent_preview_panel() -> None:
 
     st.markdown("---")
     st.markdown("##### Writer modulu (IEEE + Mermaid)")
+    with st.expander("IEEE Word sablonu (.docx ciktisi)", expanded=False):
+        st.caption(
+            "IEEE dosyasi yalnizca **stil sablonu** olarak kullanilir: icindeki ornek/dummy metin "
+            "silinir; yalnizca urettigimiz icerik, sablonun Word stilleriyle (paper title, Heading 1/2, "
+            "Body Text) yazilir. Varsayilan: `docs/templates/ConferenceTemplateIEEE.docx`."
+        )
+        st.text_input(
+            "Ozel sablon yolu (bos = varsayilan veya IEEE_DOCX_TEMPLATE ortam degiskeni)",
+            key="ieee_template_path_input",
+            placeholder=r"Ornek: C:\Users\...\ConferenceTemplateIEEE.docx",
+        )
+
+    with st.expander("IEEE tam makale: JSON + Word (sablon stilleri, onerilen)", expanded=False):
+        st.caption(
+            "Bu akista LLM **yalnizca JSON** uretir; Word tarafi sablon govdesini temizleyip "
+            "`paper title`, `Author`, `Abstract`, `Keywords`, `Heading 1`–`Heading 3`, `Heading 5`, "
+            "`Body Text`, `references` stillerini kullanir. Once **Multi-query retrieval** calistirin."
+        )
+        if st.button("IEEE tam makale: JSON uret ve Word hazirla", key="ieee_json_from_rag_btn"):
+            docs_rag = st.session_state.get("retrieved_parent_docs")
+            if not docs_rag:
+                st.error("Once multi-query retrieval ile parent baglam secin.")
+            else:
+                tpl_path = str(st.session_state.get("ieee_template_path_input") or "").strip()
+                tpl = Path(tpl_path) if tpl_path and Path(tpl_path).is_file() else resolve_default_ieee_template()
+                if tpl is None:
+                    st.error("IEEE sablon dosyasi bulunamadi.")
+                else:
+                    try:
+                        model_name = _get_cached_gemini_chat_model_name()
+                        llm_ij = _build_gemini_llm(model_name)
+
+                        def _ij_invoke(p: str) -> str:
+                            return _invoke_gemini_chat_with_retry(llm_ij, p)
+
+                        raw_json = generate_ieee_paper_json_raw(
+                            _ij_invoke,
+                            parent_documents=list(docs_rag),
+                            repository_url=str(st.session_state.get("last_url") or ""),
+                            operator_addendum=_extra_rules,
+                            user_literature_block=_lit_block,
+                        )
+                        data = parse_ieee_paper_json(raw_json)
+                        data = normalize_ieee_paper_content(
+                            data,
+                            repository_url=str(st.session_state.get("last_url") or ""),
+                        )
+                        docx_b = build_ieee_document_bytes(tpl, data)
+                        st.session_state["ieee_full_paper_docx"] = docx_b
+                        st.session_state["ieee_full_paper_json"] = json.dumps(data, ensure_ascii=False, indent=2)
+                        st.success("IEEE JSON + Word hazir. Asagidan indirin.")
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"IEEE JSON/Word hatasi: {exc}")
+                        st.warning(_gemini_retry_hint(exc))
+
+        st.text_area(
+            "Veya tam makale JSON'unu buraya yapistir (manuel Word)",
+            height=220,
+            key="ieee_json_paste_area",
+            placeholder='{"title": "...", "authors": [...], ...}',
+        )
+        if st.button("Yapistirilan JSON'dan Word olustur", key="ieee_json_from_paste_btn"):
+            tpl_path = str(st.session_state.get("ieee_template_path_input") or "").strip()
+            tpl = Path(tpl_path) if tpl_path and Path(tpl_path).is_file() else resolve_default_ieee_template()
+            if tpl is None:
+                st.error("IEEE sablon dosyasi bulunamadi.")
+            else:
+                try:
+                    pasted = str(st.session_state.get("ieee_json_paste_area") or "").strip()
+                    data = parse_ieee_paper_json(pasted)
+                    data = normalize_ieee_paper_content(
+                        data,
+                        repository_url=str(st.session_state.get("last_url") or ""),
+                    )
+                    st.session_state["ieee_full_paper_docx"] = build_ieee_document_bytes(tpl, data)
+                    st.session_state["ieee_full_paper_json"] = json.dumps(data, ensure_ascii=False, indent=2)
+                    st.success("Word hazir (yapistirilan JSON).")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"JSON/Word hatasi: {exc}")
+
+        _ij_docx = st.session_state.get("ieee_full_paper_docx")
+        if _ij_docx:
+            st.download_button(
+                "IEEE tam makaleyi indir (.docx — JSON sablonu)",
+                data=_ij_docx,
+                file_name="ieee-full-paper.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+                key="download_ieee_json_docx",
+            )
+            _ij_json = st.session_state.get("ieee_full_paper_json")
+            if _ij_json:
+                with st.expander("Son uretilen JSON"):
+                    st.code(_ij_json, language="json")
 
     if run_mode == "Adim adim" and st.button(
         "Writer: Ingilizce bolum (IEEE + Mermaid)",
@@ -600,26 +898,82 @@ def _render_agent_preview_panel() -> None:
                     section_goal=section_goal,
                     parent_documents=list(retrieved_docs),
                     max_parents=10,
+                    repository_url=str(st.session_state.get("last_url") or ""),
+                    operator_addendum=_extra_rules,
+                    user_literature_block=_lit_block,
                 )
             if result["metadata"]["status"] == "success":
                 st.session_state["writer_draft_en"] = result["text"]
+                st.session_state["writer_metadata"] = dict(result.get("metadata") or {})
                 st.success(
                     f"Taslak olusturuldu. ({result['metadata']['parents_used']} kaynak parca kullanildi.)"
                 )
             else:
                 st.error(result["text"])
 
+    full_combined = st.session_state.get("full_paper_combined_md")
+    if full_combined:
+        st.markdown("---")
+        st.markdown("**Tam makale (birlestirilmis cikti)**")
+        c_full_md, c_full_w = st.columns(2)
+        with c_full_md:
+            st.download_button(
+                "Tam makaleyi indir (.md)",
+                data=full_combined,
+                file_name="full-paper-draft.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key="download_full_paper_md",
+            )
+        with c_full_w:
+            _docx_full, _docx_note_full = _build_docx_from_markdown(full_combined)
+            st.caption(_docx_note_full)
+            st.download_button(
+                "Tam makaleyi indir (.docx)",
+                data=_docx_full,
+                file_name="full-paper-draft.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+                key="download_full_paper_docx",
+            )
+        with st.expander("Tam makale onizleme (ilk 12k karakter)"):
+            prev = full_combined[:12000]
+            st.text(prev + ("..." if len(full_combined) > 12000 else ""))
+
     draft = st.session_state.get("writer_draft_en")
     if draft:
-        st.markdown("**Writer ciktisi (English)**")
+        st.markdown("**Writer ciktisi (English) — son tek bolum veya tam makale son bolum**")
         st.markdown(draft)
-        st.download_button(
-            "Taslagi Markdown indir (.md)",
-            data=draft,
-            file_name="section-draft.md",
-            mime="text/markdown",
-            use_container_width=True,
-        )
+        _wm = st.session_state.get("writer_metadata") or {}
+        _tr = str(_wm.get("traceability") or "").strip()
+        if _tr:
+            with st.expander("TRACEABILITY (ic kontrol / hakem girdisi)"):
+                st.markdown(_tr)
+        _md_bundle = draft
+        if _tr:
+            _md_bundle = f"{draft}\n\n---\n\n## TRACEABILITY\n\n{_tr}"
+        c_sec_md, c_sec_w = st.columns(2)
+        with c_sec_md:
+            st.download_button(
+                "Taslagi indir (.md)",
+                data=draft,
+                file_name="section-draft.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key="download_section_md",
+            )
+        with c_sec_w:
+            # Word: yalnizca Writer govdesi; TRACEABILITY tablosu .md indirmede kalir, sablona dusmez.
+            _docx_sec, _docx_note_sec = _build_docx_from_markdown(draft)
+            st.caption(_docx_note_sec)
+            st.download_button(
+                "Taslagi indir (.docx)",
+                data=_docx_sec,
+                file_name="section-draft.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+                key="download_section_docx",
+            )
 
 
 def main() -> None:

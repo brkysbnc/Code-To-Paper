@@ -8,25 +8,30 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from agents.metadata_writer import MetadataWriter, extract_keywords_from_abstract
 from agents.writer import AcademicWriter
+from orchestration.paper_blueprint import DEFAULT_PAPER_SECTIONS, combine_paper_markdown
 from retriever import (
     build_rag_stack_for_repo,
     generate_planner_queries,
+    heuristic_planner_queries,
     index_repository_files,
     retrieve_parent_contexts_multi_query,
 )
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CHAT = "gemini-2.5-flash"
+_DEFAULT_CHAT = "gemini-3.1-flash-lite-preview"
 
 
 def _read_google_api_key() -> str:
@@ -53,15 +58,36 @@ def _build_gemini_llm(model_name: str) -> ChatGoogleGenerativeAI:
     )
 
 
+def _coerce_llm_content_to_text(content: Any) -> str:
+    """
+    Gemini SDK yeni surumlerinde .content alanini list[dict] (ornek: [{"type":"text","text":"..."}])
+    olarak donderebiliyor; str() temsili Python list literal'i basar ve donanyadaki tum parser'lari
+    (JSON, Markdown, regex) bozar. Bu helper liste girdisini parcalardaki text alanlarini birlestirip
+    duz string'e cevirir; str ise oldugu gibi dondurur.
+    """
+    if isinstance(content, list):
+        parts: list[str] = []
+        for chunk in content:
+            if isinstance(chunk, dict):
+                value = chunk.get("text") or chunk.get("content") or ""
+                parts.append(str(value))
+            else:
+                parts.append(str(chunk))
+        return "".join(parts)
+    return str(content)
+
+
 def _invoke_gemini_chat_with_retry(llm: BaseChatModel, prompt: str, *, max_attempts: int = 5) -> str:
     """503/429 vb. gecici hatalarda sinirli retry."""
     last_exc: BaseException | None = None
     for attempt in range(max_attempts):
         try:
-            return str(llm.invoke(prompt).content).strip()
+            return _coerce_llm_content_to_text(llm.invoke(prompt).content).strip()
         except BaseException as exc:  # noqa: BLE001
             last_exc = exc
             err_s = str(exc).lower()
+            # Quota/HTTP hatalarinin yaninda Windows DNS (getaddrinfo) ve genel socket
+            # baglanti kopukluklarini (connection reset/aborted) da retryable kabul ediyoruz.
             retryable = any(
                 x in err_s
                 for x in (
@@ -72,6 +98,9 @@ def _invoke_gemini_chat_with_retry(llm: BaseChatModel, prompt: str, *, max_attem
                     "quota",
                     "deadline",
                     "timeout",
+                    "getaddrinfo",
+                    "connection",
+                    "temporary failure",
                 )
             )
             if not retryable or attempt == max_attempts - 1:
@@ -79,6 +108,43 @@ def _invoke_gemini_chat_with_retry(llm: BaseChatModel, prompt: str, *, max_attem
             sleep_s = 2.0 * (2**attempt)
             time.sleep(sleep_s)
     raise RuntimeError(str(last_exc)) from last_exc
+
+
+def _retrieve_parents_adaptive(
+    retriever: Any,
+    *,
+    planner_queries: list[str],
+    top_k_per_query: int,
+    similarity_threshold: float,
+) -> tuple[list[Document], str]:
+    """
+    Multi-query retrieval sonucunu dondurur; sonuc bos ve esik > 0.15 ise esigi dusurup bir kez daha dener.
+    """
+    docs = retrieve_parent_contexts_multi_query(
+        retriever,
+        planner_queries=list(planner_queries),
+        top_k_per_query=int(top_k_per_query),
+        similarity_threshold=float(similarity_threshold),
+    )
+    if docs:
+        return list(docs), "success"
+    if float(similarity_threshold) > 0.15:
+        new_threshold = max(0.15, float(similarity_threshold) - 0.1)
+        logger.info(
+            "Retrieval bos; esik %.2f -> %.2f ile bir kez daha deneniyor.",
+            similarity_threshold,
+            new_threshold,
+        )
+        docs = retrieve_parent_contexts_multi_query(
+            retriever,
+            planner_queries=list(planner_queries),
+            top_k_per_query=int(top_k_per_query),
+            similarity_threshold=new_threshold,
+        )
+        if docs:
+            return list(docs), "success_after_retry"
+        return list(docs), "empty_after_retry"
+    return list(docs), "empty_after_retry"
 
 
 def run_section_pipeline(
@@ -93,6 +159,9 @@ def run_section_pipeline(
     similarity_threshold: float,
     top_k_per_query: int,
     max_planner_queries: int = 6,
+    writer_extra_rules: str = "",
+    user_literature_block: str = "",
+    existing_retriever: Any | None = None,
 ) -> dict[str, Any]:
     """
     RAG + Writer zincirini uygular.
@@ -117,14 +186,19 @@ def run_section_pipeline(
         paths = list(paths_for_index)[: max(1, int(max_index_files))]
 
         step = "indexing"
-        retriever, _store, _vs = build_rag_stack_for_repo(repo_url, commit_hash)
-        totals = index_repository_files(
-            retriever,
-            paths,
-            repo_root=repo_root,
-            repo_url=repo_url,
-            commit_hash=commit_hash,
-        )
+        if existing_retriever is not None:
+            # UI'da daha once kurulmus retriever oturumunu yeniden kullan: 0 embed.
+            retriever = existing_retriever
+            totals = {"files": 0, "parents": 0, "children": 0, "reused": 1}
+        else:
+            retriever, _store, _vs = build_rag_stack_for_repo(repo_url, commit_hash)
+            totals = index_repository_files(
+                retriever,
+                paths,
+                repo_root=repo_root,
+                repo_url=repo_url,
+                commit_hash=commit_hash,
+            )
         result["rag_totals"] = totals
         result["retriever_ready"] = True
 
@@ -141,35 +215,13 @@ def run_section_pipeline(
         result["planner_queries"] = queries
 
         step = "retrieval"
-        docs = retrieve_parent_contexts_multi_query(
+        docs, rstatus = _retrieve_parents_adaptive(
             retriever,
             planner_queries=list(queries),
             top_k_per_query=int(top_k_per_query),
             similarity_threshold=float(similarity_threshold),
         )
-
-        if docs:
-            result["retrieval_status"] = "success"
-        elif float(similarity_threshold) > 0.15:
-            new_threshold = max(0.15, float(similarity_threshold) - 0.1)
-            logger.info(
-                "Retrieval bos; esik %.2f -> %.2f ile bir kez daha deneniyor.",
-                similarity_threshold,
-                new_threshold,
-            )
-            docs = retrieve_parent_contexts_multi_query(
-                retriever,
-                planner_queries=list(queries),
-                top_k_per_query=int(top_k_per_query),
-                similarity_threshold=new_threshold,
-            )
-            if docs:
-                result["retrieval_status"] = "success_after_retry"
-            else:
-                result["retrieval_status"] = "empty_after_retry"
-        else:
-            result["retrieval_status"] = "empty_after_retry"
-
+        result["retrieval_status"] = rstatus
         result["retrieved_parent_docs"] = docs
 
         step = "writer"
@@ -183,6 +235,9 @@ def run_section_pipeline(
             section_goal=section_goal,
             parent_documents=list(docs),
             max_parents=10,
+            repository_url=repo_url,
+            operator_addendum=writer_extra_rules,
+            user_literature_block=user_literature_block,
         )
         result["writer_text"] = str(writer_out.get("text", ""))
         result["writer_metadata"] = dict(writer_out.get("metadata") or {})
@@ -193,3 +248,198 @@ def run_section_pipeline(
         result["failed_step"] = step
 
     return result
+
+
+def run_paper_pipeline(
+    *,
+    repo_url: str,
+    commit_hash: str,
+    repo_root: Path,
+    paths_for_index: list[Path],
+    sections: list[tuple[str, str]] | None = None,
+    max_index_files: int,
+    similarity_threshold: float,
+    top_k_per_query: int,
+    max_planner_queries: int = 6,
+    writer_extra_rules: str = "",
+    user_literature_block: str = "",
+    paper_title: str = "",
+    abstract_text: str = "",
+    keywords_text: str = "",
+    existing_retriever: Any | None = None,
+) -> dict[str, Any]:
+    """
+    Tek indeksleme sonrasi ardışık bolumler: her biri icin planner -> retrieval -> writer.
+
+    sections: (baslik, hedef) listesi; None ise DEFAULT_PAPER_SECTIONS kullanilir.
+    """
+    use_sections = list(sections) if sections else list(DEFAULT_PAPER_SECTIONS)
+    # Kullanicidan gelenler bos kalabilir; bolum yazimindan sonra LLM tabanli metadata fallback devreye girer.
+    repo_slug = repo_url.rstrip("/").split("/")[-1]
+    user_title = paper_title.strip()
+    user_abstract = abstract_text.strip()
+    user_keywords = keywords_text.strip()
+    combined_title = user_title if user_title else repo_slug
+    combined_abstract = user_abstract
+    combined_keywords = user_keywords
+    out: dict[str, Any] = {
+        "sections": [],
+        "combined_markdown": "",
+        "rag_totals": {},
+        "retriever_ready": False,
+        "error": None,
+        "failed_step": None,
+        "failed_section_index": None,
+        "paper_title": combined_title,
+        "abstract_text": combined_abstract,
+        "keywords_text": combined_keywords,
+    }
+    section_blocks: list[dict[str, Any]] = []
+
+    step = "init"
+    try:
+        paths = list(paths_for_index)[: max(1, int(max_index_files))]
+
+        step = "indexing"
+        if existing_retriever is not None:
+            # UI'da hazir retriever varsa yeniden indekslemeden kullan (free-tier dostu).
+            retriever = existing_retriever
+            totals = {"files": 0, "parents": 0, "children": 0, "reused": 1}
+        else:
+            retriever, _store, _vs = build_rag_stack_for_repo(repo_url, commit_hash)
+            totals = index_repository_files(
+                retriever,
+                paths,
+                repo_root=repo_root,
+                repo_url=repo_url,
+                commit_hash=commit_hash,
+            )
+        out["rag_totals"] = totals
+        out["retriever_ready"] = True
+
+        step = "llm_setup"
+        llm = _build_gemini_llm(_resolve_chat_model_name())
+
+        def _safe_invoke(prompt_text: str) -> str:
+            return _invoke_gemini_chat_with_retry(llm, prompt_text)
+
+        writer = AcademicWriter(llm_invoke_func=_safe_invoke)
+
+        for idx, (section_title, section_goal) in enumerate(use_sections):
+            step = f"planner[{idx}]"
+            queries = generate_planner_queries(
+                llm,
+                section_title=section_title,
+                section_goal=section_goal,
+                max_queries=max_planner_queries,
+            )
+
+            step = f"retrieval[{idx}]"
+            docs, rstatus = _retrieve_parents_adaptive(
+                retriever,
+                planner_queries=list(queries),
+                top_k_per_query=int(top_k_per_query),
+                similarity_threshold=float(similarity_threshold),
+            )
+
+            step = f"writer[{idx}]"
+            writer_out = writer.generate_section(
+                section_title=section_title,
+                section_goal=section_goal,
+                parent_documents=list(docs),
+                max_parents=10,
+                repository_url=repo_url,
+                operator_addendum=writer_extra_rules,
+                user_literature_block=user_literature_block,
+            )
+            meta = dict(writer_out.get("metadata") or {})
+            # Oturum / markdown sismesin diye tam LLM cevabini coklu ciktilarda tutmayiz.
+            meta.pop("full_response", None)
+
+            block = {
+                "section_index": idx,
+                "section_title": section_title,
+                "section_goal": section_goal,
+                "planner_queries": list(queries),
+                "retrieval_status": rstatus,
+                "parents_retrieved": len(docs),
+                "writer_text": str(writer_out.get("text", "")),
+                "writer_metadata": meta,
+            }
+            section_blocks.append(block)
+
+        out["sections"] = section_blocks
+
+        step = "metadata"
+        # RAG-destekli metadata: kullanici title veya abstract bos biraktiysa heuristic queriesle
+        # ek repo dokumanlari cekilir, MetadataWriter tek LLM cagrisiyla title+abstract uretir.
+        # Keywords her zaman (kullanici verse de uretilse de) abstract metninden deterministik turetilir.
+        if (not user_title or not user_abstract) and section_blocks:
+            try:
+                combined_body_for_meta = "\n\n".join(
+                    str(b.get("writer_text") or "") for b in section_blocks if b.get("writer_text")
+                ).strip()
+                if combined_body_for_meta:
+                    abstract_queries = heuristic_planner_queries(
+                        section_title="Abstract",
+                        section_goal=(
+                            "Identify core architectural components and technical contributions "
+                            "for the paper abstract."
+                        ),
+                        max_queries=3,
+                    )
+                    abstract_docs, _ = _retrieve_parents_adaptive(
+                        retriever,
+                        planner_queries=abstract_queries,
+                        top_k_per_query=int(top_k_per_query),
+                        similarity_threshold=float(similarity_threshold),
+                    )
+                    md = MetadataWriter(llm_invoke_func=_safe_invoke).generate(
+                        combined_body=combined_body_for_meta,
+                        repo_url=repo_url,
+                        rag_documents=abstract_docs,
+                    )
+                    if not user_title and md.get("title"):
+                        combined_title = md["title"]
+                    if not user_abstract and md.get("abstract"):
+                        combined_abstract = md["abstract"]
+            except Exception as meta_exc:  # noqa: BLE001
+                logger.warning("MetadataWriter atlandi (yumusak hata): %s", meta_exc)
+
+        # Keywords ⊆ abstract garantisi: kullanici kendi keyword'unu vermediyse abstract'ten cikar.
+        if not user_keywords and combined_abstract:
+            combined_keywords = extract_keywords_from_abstract(combined_abstract)
+
+        out["paper_title"] = combined_title
+        out["abstract_text"] = combined_abstract
+        out["keywords_text"] = combined_keywords
+
+        step = "combine"
+        out["combined_markdown"] = combine_paper_markdown(
+            repo_url=repo_url,
+            commit_hash=commit_hash,
+            section_results=section_blocks,
+            paper_title=combined_title,
+            abstract_text=combined_abstract,
+            keywords_text=combined_keywords,
+        )
+
+    except Exception as e:  # noqa: BLE001
+        logger.error("Paper pipeline hata (adim=%s): %s", step, e)
+        out["error"] = str(e)
+        out["failed_step"] = step
+        out["sections"] = section_blocks
+        if section_blocks:
+            out["combined_markdown"] = combine_paper_markdown(
+                repo_url=repo_url,
+                commit_hash=commit_hash,
+                section_results=section_blocks,
+                paper_title=combined_title,
+                abstract_text=combined_abstract,
+                keywords_text=combined_keywords,
+            )
+        m = re.match(r"^(planner|retrieval|writer)\[(\d+)\]$", str(step))
+        if m:
+            out["failed_section_index"] = int(m.group(2))
+
+    return out
