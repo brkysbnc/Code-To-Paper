@@ -143,59 +143,206 @@ def _is_author_block_paragraph(p_el) -> bool:
     return False
 
 def _table_contains_author_paragraph(tbl_el) -> bool:
-    """Tablonun icindeki metinlere bakarak gercek yazar tablosu olup olmadigini anlar."""
+    """
+    IEEE yazar tablosunu bulmak icin en kararli (Pro) yontem.
+    """
     from docx.oxml.ns import qn
     
-    text_content = ""
-    for t in tbl_el.iter(qn("w:t")):
-        if t.text:
-            text_content += t.text
-            
-    if "Given Name" in text_content or "Affiliation" in text_content or "organization" in text_content:
+    all_text = "".join(t.text for t in tbl_el.iter(qn("w:t")) if t.text).lower()
+    
+
+    keywords = ["given name", "surname", "affiliation", "organization", "email"]
+    
+    if any(key in all_text for key in keywords):
         return True
-        
+
     for p in tbl_el.iter(qn("w:p")):
         pPr = p.find(qn("w:pPr"))
         if pPr is not None:
             pStyle = pPr.find(qn("w:pStyle"))
             if pStyle is not None and "Author" in pStyle.get(qn("w:val"), ""):
                 return True
-                
     return False
+    
+def _split_author_paragraphs(p_el):
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from copy import deepcopy
+    import re
+
+    full_text = "".join(t.text for t in p_el.iter(qn("w:t")) if t.text)
+    pPr_original = p_el.find(qn('w:pPr'))
+
+    author_splits = list(re.finditer(r'line\s+1\s*:', full_text))
+    if len(author_splits) <= 1:
+        return _lines_to_paragraphs(full_text, pPr_original)
+
+    boundaries = [m.start() for m in author_splits] + [len(full_text)]
+    result = []
+    for i in range(len(author_splits)):
+        chunk = full_text[boundaries[i]:boundaries[i+1]]
+        result.extend(_lines_to_paragraphs(chunk, pPr_original))
+    return result
+
+
+def _lines_to_paragraphs(text, pPr_original):
+    """'line N: ...' satirlarini ayri w:p elementlerine donusturur."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from copy import deepcopy
+    import re
+
+    # 'line N:' ile baslayan parcalara bol
+    parts = re.split(r'(line\s+\d+\s*:)', text)
+    paragraphs = []
+    current_label = ""
+    for part in parts:
+        if re.match(r'line\s+\d+\s*:', part):
+            current_label = part
+        else:
+            line_text = (current_label + part).strip()
+            if line_text:
+                new_p = OxmlElement('w:p')
+                if pPr_original is not None:
+                    new_p.append(deepcopy(pPr_original))
+                r_el = OxmlElement('w:r')
+                t_el = OxmlElement('w:t')
+                t_el.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+                t_el.text = line_text
+                r_el.append(t_el)
+                new_p.append(r_el)
+                paragraphs.append(new_p)
+                current_label = ""
+    return paragraphs
+
 
 def extract_author_block_elements(doc) -> list:
-    """
-    Author paragraflarini ve author iceren tablolari govdeden cikarir; deepcopy listesi dondurur.
-    Tabloyu parcalamaz, butun olarak (w:tbl) alir.
-    """
-    from copy import deepcopy
     from docx.oxml.ns import qn
-    
-    author_elements = []
+    from docx.oxml import OxmlElement
+    from copy import deepcopy
+
     body = doc.element.body
+    note_p = None
+    all_author_paragraphs = []
+
+    def set_jc(ppr, val):
+        for existing in ppr.findall(qn('w:jc')):
+            ppr.remove(existing)
+        jc = OxmlElement('w:jc')
+        jc.set(qn('w:val'), val)
+        ppr.append(jc)
+
+    def make_tc(paragraphs=None):
+        tc = OxmlElement('w:tc')
+        tcPr = OxmlElement('w:tcPr')
+        tcW = OxmlElement('w:tcW')
+        tcW.set(qn('w:w'), '1666')
+        tcW.set(qn('w:type'), 'pct')
+        tcPr.append(tcW)
+        tc.append(tcPr)
+        if paragraphs:
+            for p in paragraphs:
+                ppr = p.find(qn('w:pPr'))
+                if ppr is None:
+                    ppr = OxmlElement('w:pPr')
+                    p.insert(0, ppr)
+                set_jc(ppr, 'center')
+                # Paragraf araligini sifirla
+                spacing = OxmlElement('w:spacing')
+                spacing.set(qn('w:before'), '0')
+                spacing.set(qn('w:after'), '0')
+                spacing.set(qn('w:line'), '240')
+                spacing.set(qn('w:lineRule'), 'auto')
+                ppr.append(spacing)
+                tc.append(p)
+        else:
+            tc.append(OxmlElement('w:p'))
+        return tc
 
     for child in list(body):
-        tag = child.tag
-        if tag == qn("w:sectPr"):
-            continue
-
-        is_author = False
-        if tag == qn("w:p") and _is_author_block_paragraph(child):
-            is_author = True
-        elif tag == qn("w:tbl") and _table_contains_author_paragraph(child):
-            is_author = True
-
-        if is_author:
-            copied = deepcopy(child)
-            # Kopyadaki tum gomulu sectPr'lari (sayfa sonu molalarini) temizle
-            for ppr in copied.iter(qn("w:pPr")):
-                for sp in list(ppr.findall(qn("w:sectPr"))):
-                    ppr.remove(sp)
-            author_elements.append(copied)
+        if child.tag == qn("w:p") and _is_author_block_paragraph(child):
+            p_copy = deepcopy(child)
+            ppr = p_copy.find(qn('w:pPr'))
+            if ppr is not None:
+                for s in ppr.findall(qn('w:sectPr')):
+                    ppr.remove(s)
+            text = "".join(t.text for t in p_copy.iter(qn("w:t")) if t.text)
+            if "Note:" in text:
+                note_p = p_copy
+            elif text.strip() == "":
+                pass
+            else:
+                split_ps = _split_author_paragraphs(p_copy)
+                all_author_paragraphs.extend(split_ps)
             body.remove(child)
 
-    return author_elements
+    authors = []
+    current_author = []
+    for p in all_author_paragraphs:
+        p_text = "".join(t.text for t in p.iter(qn("w:t")) if t.text).strip()
+        if p_text.startswith("line 1:") and current_author:
+            authors.append(current_author)
+            current_author = []
+        current_author.append(p)
+    if current_author:
+        authors.append(current_author)
 
+    authors = authors[:6]
+    final_elements = []
+
+    if note_p is not None and len(note_p):
+        ppr = note_p.find(qn('w:pPr'))
+        if ppr is None:
+            ppr = OxmlElement('w:pPr')
+            note_p.insert(0, ppr)
+        set_jc(ppr, 'center')
+        final_elements.append(note_p)
+
+    if not authors:
+        return final_elements
+
+    tbl = OxmlElement('w:tbl')
+    tblPr = OxmlElement('w:tblPr')
+    tblJc = OxmlElement('w:jc')
+    tblJc.set(qn('w:val'), 'center')
+    tblPr.append(tblJc)
+    tblW = OxmlElement('w:tblW')
+    tblW.set(qn('w:w'), '5000')
+    tblW.set(qn('w:type'), 'pct')
+    tblPr.append(tblW)
+    borders = OxmlElement('w:tblBorders')
+    for b in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
+        bd = OxmlElement(f'w:{b}')
+        bd.set(qn('w:val'), 'none')
+        bd.set(qn('w:sz'), '0')
+        bd.set(qn('w:space'), '0')
+        bd.set(qn('w:color'), 'auto')
+        borders.append(bd)
+    tblPr.append(borders)
+    tblLook = OxmlElement('w:tblLook')
+    tblLook.set(qn('w:val'), '0000')
+    tblPr.append(tblLook)
+    tbl.append(tblPr)
+    tblGrid = OxmlElement('w:tblGrid')
+    for _ in range(3):
+        gridCol = OxmlElement('w:gridCol')
+        gridCol.set(qn('w:w'), '1666')
+        tblGrid.append(gridCol)
+    tbl.append(tblGrid)
+
+    for row in range(2):
+        tr = OxmlElement('w:tr')
+        for col in range(3):
+            idx = row * 3 + col
+            if idx < len(authors):
+                tr.append(make_tc(authors[idx]))
+            else:
+                tr.append(make_tc())
+        tbl.append(tr)
+
+    final_elements.append(tbl)
+    print(f"[OK] {len(authors)} yazar, 1x3 IEEE ghost tablosuna yerlestirildi.")
+    return final_elements
 
 def make_continuous_sectpr_two_columns(space_twips: int = 360, template_sectpr=None):
     """type=continuous + cols num=2 olan yeni bir w:sectPr olusturur."""
@@ -562,8 +709,19 @@ def markdown_to_ieee_template_docx_bytes(
     patched = patch_strict_ooxml_to_opc(raw)
     doc = Document(BytesIO(patched))
 
+    from docx.oxml.ns import qn
+    print("=== YAZAR PARAGRAFLARI ===")
+    for p in doc.element.body.iter(qn("w:p")):
+        pPr = p.find(qn("w:pPr"))
+        if pPr is not None:
+            pStyle = pPr.find(qn("w:pStyle"))
+        if pStyle is not None and pStyle.get(qn("w:val")) == "Author":
+            text = "".join(t.text for t in p.iter(qn("w:t")) if t.text)
+            print(repr(text[:80]))
+    print("=== TOPLAM ===")
+
+
     author_block = extract_author_block_elements(doc)
-    # Legacy callerlar icin yine de hesaplanir; yeni akis bunu kullanmaz.
     col_break_sectpr = extract_column_break_sectpr(doc)
 
     clear_template_body_keep_styles(doc)
