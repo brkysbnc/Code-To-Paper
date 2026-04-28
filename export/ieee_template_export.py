@@ -132,34 +132,48 @@ def _w_paragraph_style_id(p_el) -> str:
         return ""
     return str(pstyle.get(qn("w:val")) or "").strip().lower()
 
-
 def _is_author_block_paragraph(p_el) -> bool:
-    """Paragraf stil id'si 'author' / 'affiliation' / 'email' iceriyorsa author bloguna aittir."""
-    sid = _w_paragraph_style_id(p_el)
-    if not sid:
-        return False
-    return any(key in sid for key in _AUTHOR_STYLE_KEYWORDS)
-
-
-def _table_contains_author_paragraph(tbl_el) -> bool:
-    """Tablonun herhangi bir hucresinde author stilli paragraf varsa True dondurur."""
-    if tbl_el is None:
-        return False
-    for p_el in tbl_el.iter(qn("w:p")):
-        if _is_author_block_paragraph(p_el):
+    """Bir paragrafin pStyle degeri 'Author' mu kontrol eder."""
+    from docx.oxml.ns import qn
+    pPr = p_el.find(qn("w:pPr"))
+    if pPr is not None:
+        pStyle = pPr.find(qn("w:pStyle"))
+        if pStyle is not None and pStyle.get(qn("w:val")) == "Author":
             return True
     return False
 
+def _table_contains_author_paragraph(tbl_el) -> bool:
+    """Tablonun icindeki metinlere bakarak gercek yazar tablosu olup olmadigini anlar."""
+    from docx.oxml.ns import qn
+    
+    text_content = ""
+    for t in tbl_el.iter(qn("w:t")):
+        if t.text:
+            text_content += t.text
+            
+    if "Given Name" in text_content or "Affiliation" in text_content or "organization" in text_content:
+        return True
+        
+    for p in tbl_el.iter(qn("w:p")):
+        pPr = p.find(qn("w:pPr"))
+        if pPr is not None:
+            pStyle = pPr.find(qn("w:pStyle"))
+            if pStyle is not None and "Author" in pStyle.get(qn("w:val"), ""):
+                return True
+                
+    return False
 
-def extract_author_block_elements(doc: DocumentObject) -> list:
+def extract_author_block_elements(doc) -> list:
     """
     Author paragraflarini ve author iceren tablolari govdeden cikarir; deepcopy listesi dondurur.
-
-    Kopyalanan elementlerin icindeki w:p/w:pPr/w:sectPr ogeleri SIYRILIR; cunku sectPr akisini
-    biz kontrol edecegiz (1-col title/author -> 2-col body gecisi). Orijinal sira korunur.
+    Tabloyu parcalamaz, butun olarak (w:tbl) alir.
     """
-    author_elements: list = []
+    from copy import deepcopy
+    from docx.oxml.ns import qn
+    
+    author_elements = []
     body = doc.element.body
+
     for child in list(body):
         tag = child.tag
         if tag == qn("w:sectPr"):
@@ -173,7 +187,7 @@ def extract_author_block_elements(doc: DocumentObject) -> list:
 
         if is_author:
             copied = deepcopy(child)
-            # Kopyadaki tum gomulu sectPr'lari kaldir (sablon kaynakli 1-col continuous break gibi).
+            # Kopyadaki tum gomulu sectPr'lari (sayfa sonu molalarini) temizle
             for ppr in copied.iter(qn("w:pPr")):
                 for sp in list(ppr.findall(qn("w:sectPr"))):
                     ppr.remove(sp)
@@ -184,20 +198,23 @@ def extract_author_block_elements(doc: DocumentObject) -> list:
 
 
 def make_continuous_sectpr_two_columns(space_twips: int = 360, template_sectpr=None):
-    """type=continuous + cols num=2 olan yeni bir w:sectPr olusturur (govde 2-sutun gecisi)."""
+    """type=continuous + cols num=2 olan yeni bir w:sectPr olusturur."""
+    from docx.oxml.shared import OxmlElement
+    from docx.oxml.ns import qn
+    from copy import deepcopy
+
     sectpr = OxmlElement("w:sectPr")
     
-    if template_sectpr is not None:
-        from copy import deepcopy
-        for tag in ["w:pgSz", "w:pgMar"]:
-            el = template_sectpr.find(qn(tag))
-            if el is not None:
-                sectpr.append(deepcopy(el))
-
     type_el = OxmlElement("w:type")
     type_el.set(qn("w:val"), "continuous")
     sectpr.append(type_el)
     
+    if template_sectpr is not None:
+        for tag in ["w:pgSz", "w:pgMar"]:
+            el = template_sectpr.find(qn(tag))
+            if el is not None:
+                sectpr.append(deepcopy(el))
+                
     cols = OxmlElement("w:cols")
     cols.set(qn("w:num"), "2")
     cols.set(qn("w:space"), str(space_twips))
@@ -206,30 +223,30 @@ def make_continuous_sectpr_two_columns(space_twips: int = 360, template_sectpr=N
     
     return sectpr
 
-
 def make_continuous_sectpr_single_column(template_sectpr=None):
     """type=continuous + cols num=1 olan yeni bir w:sectPr olusturur."""
+    from docx.oxml.shared import OxmlElement
+    from docx.oxml.ns import qn
+    from copy import deepcopy
+
     sectpr = OxmlElement("w:sectPr")
     
-    if template_sectpr is not None:
-        from copy import deepcopy
-        from docx.oxml.ns import qn
-        for tag in ["w:pgSz", "w:pgMar"]:
-            el = template_sectpr.find(qn(tag))
-            if el is not None:
-                sectpr.append(deepcopy(el))
-
     type_el = OxmlElement("w:type")
     type_el.set(qn("w:val"), "continuous")
     sectpr.append(type_el)
     
+    if template_sectpr is not None:
+        for tag in ["w:pgSz", "w:pgMar"]:
+            el = template_sectpr.find(qn(tag))
+            if el is not None:
+                sectpr.append(deepcopy(el))
+                
     cols = OxmlElement("w:cols")
     cols.set(qn("w:num"), "1")
     cols.set(qn("w:space"), "360")
     sectpr.append(cols)
     
     return sectpr
-
 
 def clear_template_body_keep_styles(doc: DocumentObject) -> None:
     """
@@ -503,7 +520,7 @@ def write_markdown_with_ieee_styles(
 
     flush_code()
     flush_table()
-
+    remove_all_numpr(doc)
 
 def _force_final_sectpr_two_columns(doc: DocumentObject, space_twips: int = 360) -> None:
     """
@@ -589,6 +606,26 @@ def resolve_default_ieee_template() -> Optional[Path]:
         return bundled
     return None
 
-
+def remove_all_numpr(doc):
+    """
+    Belgedeki hem paragraflari hem de STİLLERİ (Heading 1, vb.) tarar ve 
+    iclerindeki w:numPr (otomatik numaralandirma) etiketlerini acimasizca siler.
+    """
+    from docx.oxml.ns import qn
+    
+    for p in doc.element.body.iter(qn('w:p')):
+        pPr = p.find(qn('w:pPr'))
+        if pPr is not None:
+            numPr = pPr.find(qn('w:numPr'))
+            if numPr is not None:
+                pPr.remove(numPr)
+                
+    for style in doc.styles:
+        if hasattr(style, '_element') and style._element is not None:
+            pPr = style._element.find(qn('w:pPr'))
+            if pPr is not None:
+                numPr = pPr.find(qn('w:numPr'))
+                if numPr is not None:
+                    pPr.remove(numPr)
 # Eski isimle cagiran kodlar icin geriye donuk takma ad
 append_markdown_to_ieee_document = write_markdown_with_ieee_styles
