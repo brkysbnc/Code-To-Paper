@@ -5,3 +5,8 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Smoke / test artefaktlari (calistirinca uretilen gecici DOCX ciktilari)
+_smoke_*.docx
+*.smoke.docx
+.git/COMMIT_MSG_*.txt
