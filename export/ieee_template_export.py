@@ -565,6 +565,8 @@ def write_markdown_with_ieee_styles(
     body_style = _style_name(doc, ["Body Text", "Normal"])
     abstract_style = _style_name(doc, ["Abstract"])
     keywords_style = _style_name(doc, ["Keywords"])
+    ref_heading_style = _style_name(doc, ["Heading 5"])
+    ref_entry_style = _style_name(doc, ["references", "References"])
 
     if title:
         tp = doc.add_paragraph(title, style=paper_title_style)
@@ -608,6 +610,7 @@ def write_markdown_with_ieee_styles(
     in_code = False
     in_mermaid_fence = False
     in_mermaid_section = False
+    in_references = False
     code_lines: List[str] = []
     table_buf: List[str] = []
     # Her Heading 1 (# / ##) sonrasinda ### basliklari A., B., C. ile numaralanir.
@@ -662,6 +665,21 @@ def write_markdown_with_ieee_styles(
                 # heading isleminin asagidaki dallarda yapilmasi icin akisa devam et
             else:
                 continue
+
+        # ---- References modu: '## References' sonrasi [n] satirlari 'references' stilinde
+        if in_references:
+            if re.match(r"^\s*\[\d+\]", stripped):
+                doc.add_paragraph(stripped, style=ref_entry_style)
+                continue
+            if stripped == "":
+                doc.add_paragraph("", style=body_style)
+                continue
+            # Yeni heading geldiyse moddan cik; akisa devam et (heading dallari islesin).
+            if stripped.startswith("#"):
+                in_references = False
+            else:
+                # References icinde olmayan dolgu satirlari atla; bozulmasin.
+                in_references = False
 
         if stripped.startswith("```"):
             if in_code:
@@ -724,6 +742,12 @@ def write_markdown_with_ieee_styles(
         if stripped.startswith("## "):
             heading_raw = stripped[3:].strip()
             if "TRACEABILITY" in heading_raw.upper():
+                continue
+            # References baslıği: Roman counter HAREKET ETMEZ; ozel mod (ref_entry_style)
+            if heading_raw.lower() == "references":
+                in_references = True
+                doc.add_paragraph("References", style=ref_heading_style)
+                subsection_counter = 0
                 continue
             if author_block is None and col_break_sectpr is not None and not col_break_injected:
                 append_column_transition_paragraph(doc, col_break_sectpr)
