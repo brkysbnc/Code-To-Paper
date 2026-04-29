@@ -559,6 +559,7 @@ def markdown_to_ieee_template_docx_bytes(
     clear_template_body_keep_styles(doc)
     _force_final_sectpr_two_columns(doc, space_twips=360)
     _clear_header_footer_paragraph_text(doc)
+    _strip_numpr_from_heading_styles(doc)
 
     write_markdown_with_ieee_styles(
         doc,
@@ -595,6 +596,33 @@ def resolve_default_ieee_template() -> Optional[Path]:
     if bundled.is_file():
         return bundled
     return None
+
+
+def _strip_numpr_from_heading_styles(doc: DocumentObject) -> None:
+    """
+    Heading 1 / Heading 2 stillerindeki w:numPr otomatik numaralandirmasini siler.
+
+    Sebep: bizim akista heading metni Markdown tarafinda manuel olarak Roman ('I.', 'II.')
+    veya Alfa ('A.', 'B.') prefix ile yaziliyor; sablonun stilinde de native numId aktifse
+    Word UI'da 'I. I. Introduction' / 'A. A. Scope' seklinde cift numara gorunur.
+
+    Cozum: SADECE bu iki stilin pPr/numPr'sini defansif olarak temizlemek; body
+    paragraflarina ve diger stillere DOKUNULMAZ (markdown'dan gelen numarali listeler
+    veya Body Text gibi diger stiller etkilenmez).
+    """
+    target_style_names = ("Heading 1", "Heading 2")
+    for style_name in target_style_names:
+        try:
+            style_el = doc.styles[style_name]._element
+        except KeyError:
+            continue
+        if style_el is None:
+            continue
+        ppr = style_el.find(qn("w:pPr"))
+        if ppr is None:
+            continue
+        for numpr in list(ppr.findall(qn("w:numPr"))):
+            ppr.remove(numpr)
 
 
 # Eski isimle cagiran kodlar icin geriye donuk takma ad
