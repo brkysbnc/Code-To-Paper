@@ -135,11 +135,18 @@ def _w_paragraph_style_id(p_el) -> str:
 def _is_author_block_paragraph(p_el) -> bool:
     """Bir paragrafin pStyle degeri 'Author' mu kontrol eder."""
     from docx.oxml.ns import qn
+    
+    text = "".join(t.text for t in p_el.iter(qn("w:t")) if t.text).lower()
+    
+    if "abstract" in text or "keywords" in text:
+        return False
+
     pPr = p_el.find(qn("w:pPr"))
     if pPr is not None:
         pStyle = pPr.find(qn("w:pStyle"))
         if pStyle is not None and pStyle.get(qn("w:val")) == "Author":
             return True
+            
     return False
 
 def _table_contains_author_paragraph(tbl_el) -> bool:
