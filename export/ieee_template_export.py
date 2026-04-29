@@ -14,6 +14,7 @@ Akis ozeti (Markdown -> DOCX):
 
 from __future__ import annotations
 
+import logging
 import re
 from copy import deepcopy
 from io import BytesIO
@@ -28,6 +29,8 @@ from docx.oxml.ns import qn
 from docx.shared import Pt
 
 from export.ooxml_strict_patch import patch_strict_ooxml_to_opc
+
+logger = logging.getLogger(__name__)
 
 
 def _style_name(doc: DocumentObject, candidates: List[str]) -> str:
@@ -342,9 +345,17 @@ def extract_author_block_elements(doc: DocumentObject) -> list:
                 for sp in list(ppr.findall(qn("w:sectPr"))):
                     ppr.remove(sp)
             body.remove(child)
+            logger.info(
+                "extract_author_block_elements: TEMPLATE TABLE branch "
+                "(template author table detected, copied verbatim)"
+            )
             return ([note_p] if note_p is not None else []) + [copied]
 
     if not raw_author_paragraphs:
+        logger.info(
+            "extract_author_block_elements: NO AUTHORS branch "
+            "(no author paragraphs and no author table found)"
+        )
         return [note_p] if note_p is not None else []
 
     authors: list = []
@@ -360,8 +371,17 @@ def extract_author_block_elements(doc: DocumentObject) -> list:
 
     authors = authors[:6]
     if not authors:
+        logger.info(
+            "extract_author_block_elements: FALLBACK branch "
+            "(authors found but 'line 1:' grouping failed; returning raw paragraphs)"
+        )
         return ([note_p] if note_p is not None else []) + raw_author_paragraphs
 
+    logger.info(
+        "extract_author_block_elements: GHOST TABLE branch "
+        "(built %d-author 2x3 invisible table)",
+        len(authors),
+    )
     final_elements: list = []
     if note_p is not None:
         ppr = note_p.find(qn("w:pPr"))
@@ -766,6 +786,12 @@ def markdown_to_ieee_template_docx_bytes(
     )
 
     normalize_all_sectpr_cols_space_in_document(doc)
+
+    tables_in_body = doc.element.body.findall(qn("w:tbl"))
+    logger.info(
+        "markdown_to_ieee_template_docx_bytes: final tables in body=%d",
+        len(tables_in_body),
+    )
 
     bio = BytesIO()
     doc.save(bio)
