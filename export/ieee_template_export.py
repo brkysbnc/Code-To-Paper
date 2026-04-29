@@ -183,30 +183,59 @@ def extract_author_block_elements(doc: DocumentObject) -> list:
     return author_elements
 
 
-def make_continuous_sectpr_two_columns(space_twips: int = 360):
-    """type=continuous + cols num=2 olan yeni bir w:sectPr olusturur (govde 2-sutun gecisi)."""
+def make_continuous_sectpr_two_columns(space_twips: int = 360, template_sectpr=None):
+    """
+    type=continuous + cols num=2 olan yeni bir w:sectPr olusturur (govde 2-sutun gecisi).
+
+    template_sectpr verilirse w:pgSz / w:pgMar deepcopy ile korunur; boylece
+    inject edilen continuous bolumler de sablonun sayfa boyutu/marjlariyla cizilir.
+    OOXML schema sirasi: type -> pgSz -> pgMar -> cols.
+    """
     sectpr = OxmlElement("w:sectPr")
+
     type_el = OxmlElement("w:type")
     type_el.set(qn("w:val"), "continuous")
     sectpr.append(type_el)
+
+    if template_sectpr is not None:
+        for tag in ("w:pgSz", "w:pgMar"):
+            el = template_sectpr.find(qn(tag))
+            if el is not None:
+                sectpr.append(deepcopy(el))
+
     cols = OxmlElement("w:cols")
     cols.set(qn("w:num"), "2")
     cols.set(qn("w:space"), str(space_twips))
     cols.set(qn("w:equalWidth"), "1")
     sectpr.append(cols)
+
     return sectpr
 
 
-def make_continuous_sectpr_single_column():
-    """type=continuous + cols num=1 olan yeni bir w:sectPr olusturur (title/author 1-sutun kapanisi)."""
+def make_continuous_sectpr_single_column(template_sectpr=None):
+    """
+    type=continuous + cols num=1 olan yeni bir w:sectPr olusturur (title/author 1-sutun kapanisi).
+
+    template_sectpr verilirse w:pgSz / w:pgMar deepcopy ile korunur.
+    OOXML schema sirasi: type -> pgSz -> pgMar -> cols.
+    """
     sectpr = OxmlElement("w:sectPr")
+
     type_el = OxmlElement("w:type")
     type_el.set(qn("w:val"), "continuous")
     sectpr.append(type_el)
+
+    if template_sectpr is not None:
+        for tag in ("w:pgSz", "w:pgMar"):
+            el = template_sectpr.find(qn(tag))
+            if el is not None:
+                sectpr.append(deepcopy(el))
+
     cols = OxmlElement("w:cols")
     cols.set(qn("w:num"), "1")
     cols.set(qn("w:space"), "360")
     sectpr.append(cols)
+
     return sectpr
 
 
@@ -334,14 +363,14 @@ def write_markdown_with_ieee_styles(
         # 1-col continuous: title+author sectionunu kapat.
         p_close = OxmlElement("w:p")
         p_close_ppr = OxmlElement("w:pPr")
-        p_close_ppr.append(make_continuous_sectpr_single_column())
+        p_close_ppr.append(make_continuous_sectpr_single_column(template_sectpr=final_sectpr))
         p_close.append(p_close_ppr)
         _insert_before_final(p_close)
 
         # 2-col continuous: Abstract/Keywords/Bolumlerin yer alacagi 2-sutun sectionu ac.
         p_open = OxmlElement("w:p")
         p_open_ppr = OxmlElement("w:pPr")
-        p_open_ppr.append(make_continuous_sectpr_two_columns(360))
+        p_open_ppr.append(make_continuous_sectpr_two_columns(360, template_sectpr=final_sectpr))
         p_open.append(p_open_ppr)
         _insert_before_final(p_open)
     else:
