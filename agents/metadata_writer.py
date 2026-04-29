@@ -135,6 +135,11 @@ def extract_keywords_from_abstract(abstract: str, max_keywords: int = 6) -> str:
             w2_low = words[i + 1].lower()
             if w1_low in _BIGRAM_STOP_WORDS or w2_low in _BIGRAM_STOP_WORDS:
                 continue
+            # Cumle basi / proper-noun bigramlarini ele: ilk harfi buyuk olan kelime
+            # iceren bigram atlanir. Acronymler aşama 1'de zaten yakalandi (ALL CAPS)
+            # icin bu filtre yalnizca lowercase content kelimelerini bigram'a sokar.
+            if words[i][0].isupper() or words[i + 1][0].isupper():
+                continue
             bigram_display = f"{words[i].capitalize()} {words[i + 1].capitalize()}"
             key = bigram_display.lower()
             if key in seen_lower:
