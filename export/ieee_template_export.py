@@ -123,6 +123,18 @@ def normalize_all_sectpr_cols_space_in_document(doc: DocumentObject) -> None:
 _AUTHOR_STYLE_KEYWORDS: tuple[str, ...] = ("author", "affiliation", "email")
 
 
+_MERMAID_KEYWORDS: tuple[str, ...] = (
+    "graph TD", "graph LR", "graph RL", "graph TB", "graph BT",
+    "flowchart", "sequenceDiagram", "classDiagram", "stateDiagram",
+    "erDiagram", "journey", "gantt", "pie",
+)
+
+
+def _line_starts_mermaid(stripped: str) -> bool:
+    """Satir Mermaid grammar anahtarlarindan biriyle basliyorsa True doner (fenceless mermaid tespiti)."""
+    return any(stripped.startswith(k) for k in _MERMAID_KEYWORDS)
+
+
 def _w_paragraph_style_id(p_el) -> str:
     """w:p elementinin w:pStyle/w:val degerini kucuk harfle dondurur; yoksa bos string."""
     if p_el is None:
@@ -594,6 +606,8 @@ def write_markdown_with_ieee_styles(
             doc.add_paragraph("", style=body_style)
 
     in_code = False
+    in_mermaid_fence = False
+    in_mermaid_section = False
     code_lines: List[str] = []
     table_buf: List[str] = []
     # Her Heading 1 (# / ##) sonrasinda ### basliklari A., B., C. ile numaralanir.
@@ -622,6 +636,32 @@ def write_markdown_with_ieee_styles(
     for raw_line in body_md.splitlines():
         line = raw_line.rstrip("\n")
         stripped = line.strip()
+
+        # ---- Mermaid filtreleri (FENCED + FENCELESS) ----
+        # Fenced ```mermaid ... ``` blogunu komple atla; kod olarak bile yazma.
+        if stripped.startswith("```mermaid"):
+            in_mermaid_fence = True
+            continue
+        if in_mermaid_fence:
+            if stripped.startswith("```"):
+                in_mermaid_fence = False
+            continue
+        # Fenceless mermaid: 'graph TD', 'flowchart', 'sequenceDiagram' gibi anahtar
+        # kelimelerle baslayan satir gorulurse bir sonraki heading'e kadar tum
+        # icerigi atla. Code icindeysek tetikleme.
+        if (
+            not in_code
+            and not in_mermaid_section
+            and _line_starts_mermaid(stripped)
+        ):
+            in_mermaid_section = True
+            continue
+        if in_mermaid_section:
+            if stripped.startswith("#"):
+                in_mermaid_section = False
+                # heading isleminin asagidaki dallarda yapilmasi icin akisa devam et
+            else:
+                continue
 
         if stripped.startswith("```"):
             if in_code:
