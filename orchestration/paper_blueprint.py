@@ -37,15 +37,54 @@ def _extract_references_from_body(text: str) -> tuple[str, list[str]]:
 
 
 def _dedupe_references(all_refs: list[str]) -> list[str]:
-    """Lower-case + bosluk normalize ile tekrar eden referanslari eler; ilk gorulen sira korunur."""
-    seen: set[str] = set()
+    """
+    URL bazli oncelikli tekille me; URL bulunmayan referanslarda kucuk-harf normalize
+    edilmis tam metin anahtari kullanir. Ayni repo URL'si farkli format/yıl ile birden
+    fazla kez gelse de tek kez listeye girer; ilk gorulen sıra korunur.
+    """
+    url_re = re.compile(r'https?://[^\s,\]]+')
+    seen_urls: set[str] = set()
+    seen_text: set[str] = set()
     out: list[str] = []
     for r in all_refs:
-        key = " ".join(r.lower().split())
-        if key not in seen:
-            seen.add(key)
-            out.append(r)
+        m = url_re.search(r)
+        if m:
+            url = m.group(0).rstrip('.,;')
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+        else:
+            key = " ".join(r.lower().split())
+            if key in seen_text:
+                continue
+            seen_text.add(key)
+        out.append(r)
     return out
+
+
+def _strip_traceability_tables(text: str) -> str:
+    """
+    Govde icindeki traceability markdown tablolarini siler; bu tablolar bazen
+    PART 1 — PAPER BODY akisinin icinde TRACEABILITY: marker'indan ONCE de gorunup
+    cleaned_body'ye sizip Word'de BodyText olarak basiliyor. Yontem: header satirinda
+    'claim id' veya 'claim summary' geciyorsa, sonraki tum '|' ile baslayan ardisik
+    satirlari (table govdesi) atla; bos veya '|' ile baslamayan ilk satirda mod kapanir.
+    """
+    lines = text.splitlines()
+    out: list[str] = []
+    in_table = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            lower = stripped.lower()
+            if "claim id" in lower or "claim summary" in lower:
+                in_table = True
+            if in_table:
+                continue
+        else:
+            in_table = False
+            out.append(line)
+    return "\n".join(out)
 
 # (bolum basligi, bolum hedefi) — hedefler CONTEXT ile uyumlu kisa talimat olmali.
 # Tam makale Markdown birlestirmesinde Writer henuz uretmiyorsa kullanilan varsayilanlar.
@@ -113,6 +152,7 @@ def combine_paper_markdown(
         section_heading = str(block.get("section_title") or "Section").strip()
         body = str(block.get("writer_text") or "").strip()
         cleaned_body, section_refs = _extract_references_from_body(body)
+        cleaned_body = _strip_traceability_tables(cleaned_body)
         all_refs.extend(section_refs)
         lines.append(f"## {section_heading}")
         lines.append("")
