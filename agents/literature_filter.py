@@ -75,6 +75,33 @@ def format_approved_for_writer(approved: Sequence[Tuple[str, str]], *, max_chars
     return "\n\n".join(lines).strip()
 
 
+def _extract_json_object(raw: str) -> dict | None:
+    """
+    Defansif JSON cikarici: ham metni once oldugu gibi parse etmeyi dener;
+    basarisiz olursa metnin icindeki en buyuk `{...}` blogunu regex ile yakalayip
+    onu parse eder. Hicbiri tutmazsa None doner; cagri tarafi None gelince
+    fail-soft policy uygular.
+    """
+    s = (raw or "").strip()
+    s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s*```$", "", s)
+
+    try:
+        data = json.loads(s)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    m = re.search(r"\{[\s\S]*\}", s, re.DOTALL)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(0))
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
 def filter_literature_relevance(
     llm_invoke: Callable[[str], str],
     *,
@@ -87,7 +114,11 @@ def filter_literature_relevance(
     """
     Her literatur parcasi icin LLM'den include/exclude JSON'u alir; dahil edilenleri dondurur.
 
-    Donus: (onayli_baslik_metin_listesi, dislanan_kayitlari)
+    Donus: (onayli_baslik_metin_listesi, dislanan_kayitlari).
+
+    Fail-soft: LLM cevabi parse edilemezse kullanici secimi kaybolmasin diye
+    tum parcalar approved olarak donulur ve excluded_meta'ya tek satirlik bir
+    'gate_bypassed' notu eklenir.
     """
     if not items:
         return [], []
@@ -105,27 +136,41 @@ def filter_literature_relevance(
         f"Section goal: {section_goal}\n"
         f"Repository context (short): {repository_hint or 'n/a'}\n\n"
         "Below are INDEXed excerpts the user wants to use as external literature. "
-        "Many may be irrelevant (wrong domain, spam, or unrelated to the section goal).\n"
-        "Return ONLY a compact JSON object with this shape (no markdown fences):\n"
-        '{"include":[0,2],"exclude":[{"index":1,"reason":"one short phrase"}]}\n'
+        "Some may be irrelevant.\n\n"
+        "OUTPUT REQUIREMENTS — STRICT:\n"
+        "- Respond with RAW JSON only. No markdown fences. No preamble. No postscript.\n"
+        "- The first character of your reply MUST be `{` and the last MUST be `}`.\n"
+        '- Exact shape: {"include":[<int>,...],"exclude":[{"index":<int>,"reason":"<short>"}]}\n'
+        '- Example of a valid full reply: {"include":[0,2],"exclude":[{"index":1,"reason":"off-topic"}]}\n'
         "Rules:\n"
-        "- include: list of integer indices that materially support the section goal.\n"
+        "- include: integer indices that materially support the section goal.\n"
         "- exclude: all other indices with honest reasons.\n"
+        "- If you are uncertain about an item, PREFER include over exclude.\n"
         "- If nothing is relevant, include may be an empty list.\n\n"
         f"LITERATURE CANDIDATES:\n{bundle}"
     )
 
     raw = llm_invoke(prompt).strip()
-    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
-    raw = re.sub(r"\s*```$", "", raw)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Literatur surzgec JSON parse edilemedi, tum parcalar eleniyor.")
-        return [], [{"index": i, "reason": "json_parse_failed"} for i in range(len(items))]
+    data = _extract_json_object(raw)
+
+    if data is None:
+        logger.warning(
+            "Literatur surzgec JSON parse edilemedi; fail-soft: %d parca otomatik onaylandi.",
+            len(items),
+        )
+        return list(items), [{
+            "index": -1,
+            "reason": "gate_bypassed_due_to_json_parse_failure",
+        }]
+
+    # CLAUDE GUARD: LLM bazen "include": 0 (skaler) veya "include": "0" donderiyor;
+    # liste haline ceviriyoruz ki asagidaki for x in raw_include patlamasin.
+    raw_include = data.get("include") or []
+    if not isinstance(raw_include, list):
+        raw_include = [raw_include]
 
     include_set: set[int] = set()
-    for x in data.get("include") or []:
+    for x in raw_include:
         try:
             xi = int(x)
         except (TypeError, ValueError):
