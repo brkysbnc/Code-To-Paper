@@ -7,7 +7,84 @@ cagrılarıyla tam makale taslagina donusturur.
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+
+_REF_BLOCK_RE = re.compile(
+    r"PART\s+2\s+[—\-–]\s+REFERENCES\s*:?\s*\n(.*?)(?=PART\s+3\s+[—\-–]|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+_REF_LINE_RE = re.compile(r"^\s*\[(\d+)\]\s+(.+?)\s*$")
+
+
+def _extract_references_from_body(text: str) -> tuple[str, list[str]]:
+    """
+    Section body'sinden 'PART 2 — REFERENCES' blogunu cikarir; (temizlenmis_body, [ref_metinleri]) doner.
+    Sadece [n] ile baslayan satirlari ref olarak alir; gerisi atilir.
+    """
+    refs: list[str] = []
+    cleaned = text
+    m = _REF_BLOCK_RE.search(text)
+    if m:
+        block = m.group(1)
+        for line in block.splitlines():
+            mm = _REF_LINE_RE.match(line)
+            if mm:
+                refs.append(mm.group(2).strip())
+        cleaned = _REF_BLOCK_RE.sub("", text).strip()
+    return cleaned, refs
+
+
+def _dedupe_references(all_refs: list[str]) -> list[str]:
+    """
+    URL bazli oncelikli tekille me; URL bulunmayan referanslarda kucuk-harf normalize
+    edilmis tam metin anahtari kullanir. Ayni repo URL'si farkli format/yıl ile birden
+    fazla kez gelse de tek kez listeye girer; ilk gorulen sıra korunur.
+    """
+    url_re = re.compile(r'https?://[^\s,\]]+')
+    seen_urls: set[str] = set()
+    seen_text: set[str] = set()
+    out: list[str] = []
+    for r in all_refs:
+        m = url_re.search(r)
+        if m:
+            url = m.group(0).rstrip('.,;')
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+        else:
+            key = " ".join(r.lower().split())
+            if key in seen_text:
+                continue
+            seen_text.add(key)
+        out.append(r)
+    return out
+
+
+def _strip_traceability_tables(text: str) -> str:
+    """
+    Govde icindeki traceability markdown tablolarini siler; bu tablolar bazen
+    PART 1 — PAPER BODY akisinin icinde TRACEABILITY: marker'indan ONCE de gorunup
+    cleaned_body'ye sizip Word'de BodyText olarak basiliyor. Yontem: header satirinda
+    'claim id' veya 'claim summary' geciyorsa, sonraki tum '|' ile baslayan ardisik
+    satirlari (table govdesi) atla; bos veya '|' ile baslamayan ilk satirda mod kapanir.
+    """
+    lines = text.splitlines()
+    out: list[str] = []
+    in_table = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            lower = stripped.lower()
+            if "claim id" in lower or "claim summary" in lower:
+                in_table = True
+            if in_table:
+                continue
+        else:
+            in_table = False
+            out.append(line)
+    return "\n".join(out)
 
 # (bolum basligi, bolum hedefi) — hedefler CONTEXT ile uyumlu kisa talimat olmali.
 # Tam makale Markdown birlestirmesinde Writer henuz uretmiyorsa kullanilan varsayilanlar.
@@ -69,18 +146,30 @@ def combine_paper_markdown(
         "",
     ]
     trace_chunks: list[str] = []
+    all_refs: list[str] = []
 
     for block in section_results:
         section_heading = str(block.get("section_title") or "Section").strip()
         body = str(block.get("writer_text") or "").strip()
+        cleaned_body, section_refs = _extract_references_from_body(body)
+        cleaned_body = _strip_traceability_tables(cleaned_body)
+        all_refs.extend(section_refs)
         lines.append(f"## {section_heading}")
         lines.append("")
-        lines.append(body)
+        lines.append(cleaned_body)
         lines.append("")
         meta = block.get("writer_metadata") or {}
         tr = str(meta.get("traceability") or "").strip()
         if tr:
             trace_chunks.append(f"### {section_heading}\n\n{tr}\n")
+
+    deduped = _dedupe_references(all_refs)
+    if deduped:
+        lines.append("## References")
+        lines.append("")
+        for i, ref in enumerate(deduped, start=1):
+            lines.append(f"[{i}] {ref}")
+        lines.append("")
 
     if trace_chunks:
         lines.append("---")

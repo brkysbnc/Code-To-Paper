@@ -274,6 +274,15 @@ def run_paper_pipeline(
     sections: (baslik, hedef) listesi; None ise DEFAULT_PAPER_SECTIONS kullanilir.
     """
     use_sections = list(sections) if sections else list(DEFAULT_PAPER_SECTIONS)
+    # Literature Review sadece kullanici literatür metni saglamissa eklenir.
+    _lit_provided = bool((user_literature_block or "").strip())
+    use_sections = [
+        (title, goal) for title, goal in use_sections
+        if not (
+            title.lower() in ("literature review", "related work")
+            and not _lit_provided
+        )
+    ]
     # Kullanicidan gelenler bos kalabilir; bolum yazimindan sonra LLM tabanli metadata fallback devreye girer.
     repo_slug = repo_url.rstrip("/").split("/")[-1]
     user_title = paper_title.strip()

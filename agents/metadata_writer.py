@@ -127,13 +127,25 @@ def extract_keywords_from_abstract(abstract: str, max_keywords: int = 6) -> str:
             found.append(display)
             seen_lower.add(display.lower())
 
-    # 3) Bigram fallback: yeterli sayida term yoksa abstract icindeki anlamli ikilikleri ekle.
-    if len(found) < max_keywords:
+    # 3) Bigram fallback: SON CARE; yalnizca aşama 1+2'den 3'ten az anlamli term cikti ise
+    # tetiklenir. Boylece "Rapid Evolution" / "Evolution Technical" gibi cumle ortasi
+    # dolgu bigramlari rutin olarak keyword listesine sizmaz.
+    if len(found) < 3:
         words = re.findall(r"\b[a-zA-Z]{3,}\b", abstract)
         for i in range(len(words) - 1):
             w1_low = words[i].lower()
             w2_low = words[i + 1].lower()
             if w1_low in _BIGRAM_STOP_WORDS or w2_low in _BIGRAM_STOP_WORDS:
+                continue
+            # Cumle basi / proper-noun bigramlarini ele: ilk harfi buyuk olan kelime
+            # iceren bigram atlanir. Acronymler aşama 1'de zaten yakalandi (ALL CAPS)
+            # icin bu filtre yalnizca lowercase content kelimelerini bigram'a sokar.
+            if words[i][0].isupper() or words[i + 1][0].isupper():
+                continue
+            # Min uzunluk filtresi: stop-word listesinden kacan kisa yaygın kelimeler
+            # ("the", "its", "use", "key" vb.) bigram olusturmasin diye iki tarafta
+            # da en az 5 karakter zorunlu.
+            if len(w1_low) < 5 or len(w2_low) < 5:
                 continue
             bigram_display = f"{words[i].capitalize()} {words[i + 1].capitalize()}"
             key = bigram_display.lower()

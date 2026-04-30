@@ -35,15 +35,37 @@ CRITICAL RULES:
 1. NO HALLUCINATION: Base repository implementation claims ONLY on CONTEXT. For claims grounded strictly in USER_LITERATURE_APPROVED, you may use only what appears there. If neither source supports a claim, write exactly: [Insufficient evidence] for that part (or the whole section if appropriate).
 2. CITATION (BODY — STRICT): In the reader-facing BODY prose you must NOT include filenames, paths, line numbers, backticks around paths, or patterns like file:, lines:, (path:start-end). The ONLY inline citation markers in the BODY are numeric: [1], [2], …
 3. Citation meaning: [1] = the GitHub repository as a whole (implementation), when a repository URL is provided below. Numbers [2], [3], … refer ONLY to sources explicitly labeled [2], [3], … inside USER_LITERATURE_APPROVED when that block is not "(none)". Do not use [2] for individual repository files from CONTEXT; those remain cited collectively as [1] where appropriate.
-4. STRUCTURE (Markdown headings unless your training template conflicts):
-### Scope
-### Design and implementation (from code)
-### Security / trust boundaries (only if evidenced in CONTEXT; otherwise one honest paragraph, may use [Insufficient evidence])
-### Mermaid snapshot
-### Limitations
-Exception — when Section Title is exactly "Literature Review" or exactly "Related Work": do NOT use the generic Scope/Design/Security/Mermaid/Limitations ### template. Use ### subheadings that reflect actual cited works or distinct themes grounded in USER_LITERATURE_APPROVED and CONTEXT (e.g. one ### per major cited source or grouping), not placeholder generic section names.
-Exception — when Section Title is exactly "Introduction" or exactly "Conclusion": omit "### Mermaid snapshot" entirely and include NO fenced Mermaid diagram anywhere in PART 1 — PAPER BODY (rules 4–5 on Mermaid do not apply to those two section titles).
-5. MERMAID: Exactly ONE fenced Mermaid block (unless Section Title is Introduction or Conclusion per rule 4 exceptions); first line inside the fence MUST be: graph TD. Use only components/flows evidenced in CONTEXT.
+4. STRUCTURE: Write flowing academic prose. Use ### subheadings ONLY
+   when the content genuinely requires subdivision into distinct topics.
+   You are NOT required to use any fixed subheading names.
+   - Choose subheading titles that accurately describe the specific
+     content you are writing, based solely on what CONTEXT supports.
+   - Do NOT use these generic placeholder names: "Scope",
+     "Design and implementation", "Security / trust boundaries",
+     "Mermaid snapshot", "Limitations" — unless those exact topics
+     are the most accurate description of what CONTEXT contains.
+   - Do NOT add a subheading just to create structure. If the content
+     flows naturally as continuous prose, write it that way.
+   - Subheadings must be specific to this project's actual components
+     (e.g. "Parent-Child Indexing Strategy", "Adaptive Retrieval
+     Threshold", "Rate-Limited Embedding Pipeline").
+   Exception — Introduction and Conclusion: write as flowing prose,
+   no ### subheadings at all, no Mermaid diagram.
+   Exception — Literature Review / Related Work: one ### per major
+   cited theme or source group, grounded in USER_LITERATURE_APPROVED.
+
+4b. SUBHEADING FORMAT: When you write ### subheadings, write ONLY
+    the title text. Do NOT prefix with A. B. C. or Roman numerals.
+    Do NOT write "### A. Pipeline Design" — write "### Pipeline Design".
+    The export layer adds letter prefixes automatically.
+
+5. MERMAID: You MAY include one optional fenced Mermaid diagram
+   (first line inside fence MUST be: graph TD) ONLY IF the diagram
+   adds meaningful architectural insight not already clear from prose.
+   Use only components/flows directly evidenced in CONTEXT.
+   If the section does not benefit from a diagram, omit it entirely.
+   Exception — Introduction and Conclusion: never include Mermaid.
+   Exception — Literature Review / Related Work: never include Mermaid.
 6. DO NOT invent libraries, services, or features not present in the context.
 
 OUTPUT — IN THIS ORDER (labels help downstream parsing):

@@ -14,6 +14,7 @@ Akis ozeti (Markdown -> DOCX):
 
 from __future__ import annotations
 
+import logging
 import re
 from copy import deepcopy
 from io import BytesIO
@@ -28,6 +29,8 @@ from docx.oxml.ns import qn
 from docx.shared import Pt
 
 from export.ooxml_strict_patch import patch_strict_ooxml_to_opc
+
+logger = logging.getLogger(__name__)
 
 
 def _style_name(doc: DocumentObject, candidates: List[str]) -> str:
@@ -118,6 +121,18 @@ def normalize_all_sectpr_cols_space_in_document(doc: DocumentObject) -> None:
 
 
 _AUTHOR_STYLE_KEYWORDS: tuple[str, ...] = ("author", "affiliation", "email")
+
+
+_MERMAID_KEYWORDS: tuple[str, ...] = (
+    "graph TD", "graph LR", "graph RL", "graph TB", "graph BT",
+    "flowchart", "sequenceDiagram", "classDiagram", "stateDiagram",
+    "erDiagram", "journey", "gantt", "pie",
+)
+
+
+def _line_starts_mermaid(stripped: str) -> bool:
+    """Satir Mermaid grammar anahtarlarindan biriyle basliyorsa True doner (fenceless mermaid tespiti)."""
+    return any(stripped.startswith(k) for k in _MERMAID_KEYWORDS)
 
 
 def _w_paragraph_style_id(p_el) -> str:
@@ -342,9 +357,17 @@ def extract_author_block_elements(doc: DocumentObject) -> list:
                 for sp in list(ppr.findall(qn("w:sectPr"))):
                     ppr.remove(sp)
             body.remove(child)
+            logger.info(
+                "extract_author_block_elements: TEMPLATE TABLE branch "
+                "(template author table detected, copied verbatim)"
+            )
             return ([note_p] if note_p is not None else []) + [copied]
 
     if not raw_author_paragraphs:
+        logger.info(
+            "extract_author_block_elements: NO AUTHORS branch "
+            "(no author paragraphs and no author table found)"
+        )
         return [note_p] if note_p is not None else []
 
     authors: list = []
@@ -360,8 +383,17 @@ def extract_author_block_elements(doc: DocumentObject) -> list:
 
     authors = authors[:6]
     if not authors:
+        logger.info(
+            "extract_author_block_elements: FALLBACK branch "
+            "(authors found but 'line 1:' grouping failed; returning raw paragraphs)"
+        )
         return ([note_p] if note_p is not None else []) + raw_author_paragraphs
 
+    logger.info(
+        "extract_author_block_elements: GHOST TABLE branch "
+        "(built %d-author 2x3 invisible table)",
+        len(authors),
+    )
     final_elements: list = []
     if note_p is not None:
         ppr = note_p.find(qn("w:pPr"))
@@ -533,6 +565,8 @@ def write_markdown_with_ieee_styles(
     body_style = _style_name(doc, ["Body Text", "Normal"])
     abstract_style = _style_name(doc, ["Abstract"])
     keywords_style = _style_name(doc, ["Keywords"])
+    ref_heading_style = _style_name(doc, ["Heading 5"])
+    ref_entry_style = _style_name(doc, ["references", "References"])
 
     if title:
         tp = doc.add_paragraph(title, style=paper_title_style)
@@ -574,6 +608,9 @@ def write_markdown_with_ieee_styles(
             doc.add_paragraph("", style=body_style)
 
     in_code = False
+    in_mermaid_fence = False
+    in_mermaid_section = False
+    in_references = False
     code_lines: List[str] = []
     table_buf: List[str] = []
     # Her Heading 1 (# / ##) sonrasinda ### basliklari A., B., C. ile numaralanir.
@@ -602,6 +639,47 @@ def write_markdown_with_ieee_styles(
     for raw_line in body_md.splitlines():
         line = raw_line.rstrip("\n")
         stripped = line.strip()
+
+        # ---- Mermaid filtreleri (FENCED + FENCELESS) ----
+        # Fenced ```mermaid ... ``` blogunu komple atla; kod olarak bile yazma.
+        if stripped.startswith("```mermaid"):
+            in_mermaid_fence = True
+            continue
+        if in_mermaid_fence:
+            if stripped.startswith("```"):
+                in_mermaid_fence = False
+            continue
+        # Fenceless mermaid: 'graph TD', 'flowchart', 'sequenceDiagram' gibi anahtar
+        # kelimelerle baslayan satir gorulurse bir sonraki heading'e kadar tum
+        # icerigi atla. Code icindeysek tetikleme.
+        if (
+            not in_code
+            and not in_mermaid_section
+            and _line_starts_mermaid(stripped)
+        ):
+            in_mermaid_section = True
+            continue
+        if in_mermaid_section:
+            if stripped.startswith("#"):
+                in_mermaid_section = False
+                # heading isleminin asagidaki dallarda yapilmasi icin akisa devam et
+            else:
+                continue
+
+        # ---- References modu: '## References' sonrasi [n] satirlari 'references' stilinde
+        if in_references:
+            if re.match(r"^\s*\[\d+\]", stripped):
+                doc.add_paragraph(stripped, style=ref_entry_style)
+                continue
+            if stripped == "":
+                doc.add_paragraph("", style=body_style)
+                continue
+            # Yeni heading geldiyse moddan cik; akisa devam et (heading dallari islesin).
+            if stripped.startswith("#"):
+                in_references = False
+            else:
+                # References icinde olmayan dolgu satirlari atla; bozulmasin.
+                in_references = False
 
         if stripped.startswith("```"):
             if in_code:
@@ -664,6 +742,12 @@ def write_markdown_with_ieee_styles(
         if stripped.startswith("## "):
             heading_raw = stripped[3:].strip()
             if "TRACEABILITY" in heading_raw.upper():
+                continue
+            # References baslıği: Roman counter HAREKET ETMEZ; ozel mod (ref_entry_style)
+            if heading_raw.lower() == "references":
+                in_references = True
+                doc.add_paragraph("References", style=ref_heading_style)
+                subsection_counter = 0
                 continue
             if author_block is None and col_break_sectpr is not None and not col_break_injected:
                 append_column_transition_paragraph(doc, col_break_sectpr)
@@ -766,6 +850,12 @@ def markdown_to_ieee_template_docx_bytes(
     )
 
     normalize_all_sectpr_cols_space_in_document(doc)
+
+    tables_in_body = doc.element.body.findall(qn("w:tbl"))
+    logger.info(
+        "markdown_to_ieee_template_docx_bytes: final tables in body=%d",
+        len(tables_in_body),
+    )
 
     bio = BytesIO()
     doc.save(bio)
