@@ -419,6 +419,87 @@ def _build_docx_from_markdown(md: str) -> tuple[bytes, str]:
         return markdown_to_docx_bytes(md), f"Sablon acilamadi ({exc}); duz Word kullanildi."
 
 
+# ---------------------------------------------------------------------------
+# Faithfulness badge + claim breakdown helpers
+# ---------------------------------------------------------------------------
+
+_FAITH_BADGE_CSS: dict[str, tuple[str, str]] = {
+    # label -> (background colour, text colour)
+    "high":   ("#1e7e34", "#ffffff"),
+    "medium": ("#856404", "#ffffff"),
+    "low":    ("#842029", "#ffffff"),
+    "unavailable": ("#555555", "#ffffff"),
+}
+
+_VERDICT_EMOJI = {
+    "supported":   "✓",
+    "partial":     "~",
+    "unsupported": "✗",
+}
+
+
+def _render_faithfulness_badge(faithfulness: dict | None, *, section_title: str = "") -> None:
+    """Renders a coloured inline badge + per-claim breakdown expander."""
+    if faithfulness is None:
+        bg, fg = _FAITH_BADGE_CSS["unavailable"]
+        st.markdown(
+            f'<span style="background:{bg};color:{fg};padding:3px 10px;border-radius:4px;'
+            f'font-size:0.85rem;font-weight:600">⚫ Faithfulness: judge_unavailable</span>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    score = faithfulness.get("score", 0.0)
+    label = faithfulness.get("label", "low")
+    count = faithfulness.get("claim_count", 0)
+    emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(label, "⚫")
+    bg, fg = _FAITH_BADGE_CSS.get(label, _FAITH_BADGE_CSS["unavailable"])
+    st.markdown(
+        f'<span style="background:{bg};color:{fg};padding:3px 10px;border-radius:4px;'
+        f'font-size:0.85rem;font-weight:600">{emoji} Faithfulness: {score:.2f} / {label} ({count} claims)</span>',
+        unsafe_allow_html=True,
+    )
+
+    claims = faithfulness.get("claims") or []
+    if claims:
+        with st.expander("Claim breakdown", expanded=False):
+            rows: list[str] = []
+            rows.append("| Claim ID | Summary | Verdict | Evidence Quote |")
+            rows.append("|----------|---------|---------|----------------|")
+            for c in claims:
+                verdict_icon = _VERDICT_EMOJI.get(c.get("verdict", ""), "?")
+                cid = c.get("id", "")
+                summary = (c.get("summary") or "")[:80]
+                verdict = f"{verdict_icon} {c.get('verdict', '')}"
+                quote = (c.get("evidence_quote") or "")[:120].replace("|", "\\|")
+                rows.append(f"| {cid} | {summary} | {verdict} | {quote} |")
+            st.markdown("\n".join(rows))
+
+
+def _compute_paper_faithfulness(section_blocks: list[dict]) -> tuple[float | None, str | None, int]:
+    """
+    Computes the paper-wide faithfulness as a weighted mean (weighted by claim_count).
+
+    Returns (score, label, total_claims) or (None, None, 0) if no scored sections.
+    """
+    total_weight = 0
+    weighted_sum = 0.0
+    for block in section_blocks:
+        f = block.get("faithfulness")
+        if not f:
+            continue
+        count = f.get("claim_count", 0)
+        if count == 0:
+            continue
+        weighted_sum += f["score"] * count
+        total_weight += count
+    if total_weight == 0:
+        return None, None, 0
+    score = round(weighted_sum / total_weight, 3)
+    label = "high" if score >= 0.8 else "medium" if score >= 0.6 else "low"
+    return score, label, total_weight
+
+
 def _render_agent_preview_panel() -> None:
     """
     Planner + (istege bagli) multi-query retrieval + Ingilizce writer taslagini test eder.
@@ -617,6 +698,22 @@ def _render_agent_preview_panel() -> None:
             else:
                 totals = paper_result.get("rag_totals") or {}
                 n_sec = len(paper_result.get("sections") or [])
+                # Paper-wide faithfulness metric
+                _pw_score, _pw_label, _pw_claims = _compute_paper_faithfulness(
+                    list(paper_result.get("sections") or [])
+                )
+                _faith_col1, _faith_col2, _faith_col3, _faith_col4 = st.columns(4)
+                _faith_col1.metric("Bölüm sayısı", n_sec)
+                _faith_col2.metric("İndekslenen dosya", totals.get('files', 0))
+                _faith_col3.metric("Toplam iddia (claim)", _pw_claims)
+                if _pw_score is not None:
+                    _faith_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(_pw_label, "⚫")
+                    _faith_col4.metric(
+                        "Makale geneli güvenilirlik",
+                        f"{_faith_emoji} {_pw_score:.2f} ({_pw_label})",
+                    )
+                else:
+                    _faith_col4.metric("Makale geneli güvenilirlik", "— (judge_unavailable)")
                 st.success(
                     f"Tam makale tamamlandi (bolum sayisi={n_sec}). "
                     f"{totals.get('files', 0)} dosya indekslendi."
@@ -628,6 +725,18 @@ def _render_agent_preview_panel() -> None:
                         f"Bolum '{sb.get('section_title')}': retrieval sonuc bos olabilir "
                         f"({rs})."
                     )
+            # --- Per-section faithfulness expanders ---
+            _sections_for_display = list(paper_result.get("sections") or [])
+            if _sections_for_display:
+                st.markdown("**Bölüm önizlemeleri (güvenilirlik skorları)**")
+                for _sb in _sections_for_display:
+                    _sb_title = str(_sb.get("section_title") or "Section")
+                    with st.expander(f"📄 {_sb_title}", expanded=False):
+                        _render_faithfulness_badge(_sb.get("faithfulness"), section_title=_sb_title)
+                        _sb_trace = str((_sb.get("writer_metadata") or {}).get("traceability") or "").strip()
+                        if _sb_trace:
+                            with st.expander("TRACEABILITY (iç kontrol)", expanded=False):
+                                st.markdown(_sb_trace)
             combined = str(paper_result.get("combined_markdown") or "").strip()
             if combined:
                 st.session_state["full_paper_combined_md"] = combined
