@@ -374,7 +374,40 @@ def run_paper_pipeline(
                 "parents_retrieved": len(docs),
                 "writer_text": str(writer_out.get("text", "")),
                 "writer_metadata": meta,
+                "faithfulness": None,
             }
+
+            # --- Faithfulness judge (fail-soft: never takes down the pipeline) ---
+            step = f"faithfulness_judge[{idx}]"
+            try:
+                from agents.faithfulness_judge import judge_section_faithfulness  # lazy import
+
+                trace = meta.get("traceability", "").strip()
+                if trace:
+                    block["faithfulness"] = judge_section_faithfulness(
+                        writer_text=str(writer_out.get("text", "")),
+                        writer_traceability=trace,
+                        parent_documents=list(docs),
+                        llm_invoke=_safe_invoke,
+                    )
+                    logger.info(
+                        "Faithfulness judge [%s]: score=%.3f label=%s claims=%d",
+                        section_title,
+                        block["faithfulness"]["score"],
+                        block["faithfulness"]["label"],
+                        block["faithfulness"]["claim_count"],
+                    )
+                else:
+                    logger.debug("Faithfulness judge skipped (no traceability): %s", section_title)
+            except Exception as _jex:  # noqa: BLE001
+                logger.warning(
+                    "Faithfulness judge failed (soft, section='%s'): %s",
+                    section_title,
+                    _jex,
+                )
+                block["faithfulness"] = None
+
+            step = f"post_judge[{idx}]"
             section_blocks.append(block)
 
         out["sections"] = section_blocks
@@ -447,7 +480,7 @@ def run_paper_pipeline(
                 abstract_text=combined_abstract,
                 keywords_text=combined_keywords,
             )
-        m = re.match(r"^(planner|retrieval|writer)\[(\d+)\]$", str(step))
+        m = re.match(r"^(planner|retrieval|writer|faithfulness_judge|post_judge)\[(\d+)\]$", str(step))
         if m:
             out["failed_section_index"] = int(m.group(2))
 
