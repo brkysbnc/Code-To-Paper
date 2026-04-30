@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _CACHE_DIR = Path("data") / "faithfulness_cache"
 
 _TRACE_ROW_RE = re.compile(
-    r"^\s*\|\s*(C\d+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*$"
+    r"^\s*\|\s*(C?\d+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*$"
 )
 
 _JUDGE_PROMPT_HEADER = """\

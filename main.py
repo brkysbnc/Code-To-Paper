@@ -17,6 +17,8 @@ from agents.writer import AcademicWriter
 import streamlit as st
 from dotenv import load_dotenv
 from google import genai
+
+load_dotenv()  # .env'i Streamlit widget'larından ve LLM istemcilerinden önce yükle
 from git.exc import GitCommandError
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -66,11 +68,10 @@ _INDEX_SUFFIX_PRIORITY = (
     ".json",
     ".toml",
 )
-_DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
+_DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
 _GEMINI_FALLBACK_MODELS = (
-    "gemini-3.1-flash-lite-preview",
-    "gemini-2.5-flash-lite",
     "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
     "gemini-flash-lite-latest",
 )
 

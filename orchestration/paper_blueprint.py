@@ -171,7 +171,6 @@ def combine_paper_markdown(
             lines.append(f"[{i}] {ref}")
         lines.append("")
 
-    # --- Faithfulness Audit (BEFORE the TRACEABILITY aggregator) ---
     audit_chunks: list[str] = []
     total_weight = 0
     weighted_sum = 0.0

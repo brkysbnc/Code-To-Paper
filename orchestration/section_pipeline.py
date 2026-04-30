@@ -31,7 +31,7 @@ from retriever import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CHAT = "gemini-3.1-flash-lite-preview"
+_DEFAULT_CHAT = "gemini-2.5-flash"  # .env / env GEMINI_CHAT_MODEL ile ezilir
 
 
 def _read_google_api_key() -> str:
@@ -44,7 +44,8 @@ def _read_google_api_key() -> str:
 
 
 def _resolve_chat_model_name() -> str:
-    """Streamlit disi: GEMINI_CHAT_MODEL veya varsayilan flash."""
+    """GEMINI_CHAT_MODEL env degiskenini okur; yoksa varsayilan flash kullanilir."""
+    load_dotenv()  # .env henuz yuklenmemisse (script modu / test) burada yukle
     name = os.getenv("GEMINI_CHAT_MODEL", "").strip()
     return name or _DEFAULT_CHAT
 
@@ -108,6 +109,32 @@ def _invoke_gemini_chat_with_retry(llm: BaseChatModel, prompt: str, *, max_attem
             sleep_s = 2.0 * (2**attempt)
             time.sleep(sleep_s)
     raise RuntimeError(str(last_exc)) from last_exc
+
+
+def _read_retriever_totals(retriever: Any) -> dict[str, int]:
+    """
+    Mevcut bir retriever'dan gercek Chroma child ve docstore parent sayisini okur.
+
+    Yeni indeksleme yapilmadigi icin 'files' her zaman 0 gelir; parent ve child
+    sayilari dogrudan Chroma koleksiyonu ve docstore'dan alinir.
+    """
+    n_children = 0
+    n_parents = 0
+    try:
+        vs = retriever.vectorstore
+        n_children = int(vs._collection.count())  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        try:
+            sample = retriever.vectorstore.get(limit=1)
+            n_children = 1 if (sample and sample.get("ids")) else 0
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        for _ in retriever.docstore.yield_keys():
+            n_parents += 1
+    except Exception:  # noqa: BLE001
+        pass
+    return {"files": 0, "parents": n_parents, "children": n_children}
 
 
 def _retrieve_parents_adaptive(
@@ -313,7 +340,9 @@ def run_paper_pipeline(
         if existing_retriever is not None:
             # UI'da hazir retriever varsa yeniden indekslemeden kullan (free-tier dostu).
             retriever = existing_retriever
-            totals = {"files": 0, "parents": 0, "children": 0, "reused": 1}
+            # Gercek Chroma sayisini oku; hard-coded 0 degil.
+            totals = _read_retriever_totals(retriever)
+            totals["reused"] = 1
         else:
             retriever, _store, _vs = build_rag_stack_for_repo(repo_url, commit_hash)
             totals = index_repository_files(
@@ -323,6 +352,12 @@ def run_paper_pipeline(
                 repo_url=repo_url,
                 commit_hash=commit_hash,
             )
+            # skip_if_indexed=True durumunda index_repository_files files=0 doner;
+            # gercek sayiyi Chroma'dan tamamla.
+            if totals.get("reused") == 1 and totals.get("files", 0) == 0:
+                real = _read_retriever_totals(retriever)
+                totals["parents"] = real["parents"]
+                totals["children"] = real["children"]
         out["rag_totals"] = totals
         out["retriever_ready"] = True
 
@@ -377,10 +412,9 @@ def run_paper_pipeline(
                 "faithfulness": None,
             }
 
-            # --- Faithfulness judge (fail-soft: never takes down the pipeline) ---
             step = f"faithfulness_judge[{idx}]"
             try:
-                from agents.faithfulness_judge import judge_section_faithfulness  # lazy import
+                from agents.faithfulness_judge import judge_section_faithfulness 
 
                 trace = meta.get("traceability", "").strip()
                 if trace:
