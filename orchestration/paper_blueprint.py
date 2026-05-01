@@ -171,6 +171,57 @@ def combine_paper_markdown(
             lines.append(f"[{i}] {ref}")
         lines.append("")
 
+    audit_chunks: list[str] = []
+    total_weight = 0
+    weighted_sum = 0.0
+    for block in section_results:
+        f = block.get("faithfulness")
+        if not f:
+            continue
+        count = int(f.get("claim_count") or 0)
+        if count == 0:
+            continue
+        weighted_sum += float(f.get("score", 0.0)) * count
+        total_weight += count
+        sec_heading = str(block.get("section_title") or "Section").strip()
+        sec_label = f.get("label", "low")
+        sec_score = f.get("score", 0.0)
+        chunk_lines: list[str] = [
+            f"### {sec_heading}",
+            "",
+            f"Faithfulness score: {sec_score:.2f} ({sec_label})",
+            "",
+            "| Claim | Verdict | Source | Notes |",
+            "|-------|---------|--------|-------|",
+        ]
+        for c in (f.get("claims") or []):
+            verdict = str(c.get("verdict", "unsupported"))
+            verdict_icon = {"supported": "✓", "partial": "~", "unsupported": "✗"}.get(verdict, "?")
+            src = f"{c.get('source_file', '')} : {c.get('lines', '')}"
+            note = (c.get("judge_note") or "").replace("|", "\\|")
+            cid = c.get("id", "")
+            summary = (c.get("summary") or "")[:80]
+            chunk_lines.append(f"| {cid}: {summary} | {verdict_icon} {verdict} | {src} | {note} |")
+        chunk_lines.append("")
+        audit_chunks.append("\n".join(chunk_lines))
+
+    if audit_chunks:
+        paper_score: float | None = None
+        paper_label: str | None = None
+        if total_weight > 0:
+            paper_score = round(weighted_sum / total_weight, 3)
+            paper_label = "high" if paper_score >= 0.8 else "medium" if paper_score >= 0.6 else "low"
+        lines.append("---")
+        lines.append("")
+        lines.append("## Faithfulness Audit")
+        lines.append("")
+        if paper_score is not None:
+            lines.append(f"Aggregate paper-wide faithfulness: {paper_score:.2f} ({paper_label}).")
+        else:
+            lines.append("Aggregate paper-wide faithfulness: unavailable.")
+        lines.append("")
+        lines.extend(audit_chunks)
+
     if trace_chunks:
         lines.append("---")
         lines.append("")
