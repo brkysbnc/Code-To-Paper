@@ -68,10 +68,11 @@ _INDEX_SUFFIX_PRIORITY = (
     ".json",
     ".toml",
 )
-_DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
+_DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 _GEMINI_FALLBACK_MODELS = (
-    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite-preview",
     "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
     "gemini-flash-lite-latest",
 )
 
@@ -726,18 +727,21 @@ def _render_agent_preview_panel() -> None:
                         f"Bolum '{sb.get('section_title')}': retrieval sonuc bos olabilir "
                         f"({rs})."
                     )
-            # --- Per-section faithfulness expanders ---
+            # --- Per-section faithfulness display ---
+            # Streamlit nested expander DESTEKLEMEZ; outer expander yerine markdown
+            # baslik + horizontal rule kullaniyoruz. Boylece icerideki "Claim breakdown"
+            # (badge icindeki) ve "TRACEABILITY (ic kontrol)" expander'lari top-level kalir.
             _sections_for_display = list(paper_result.get("sections") or [])
             if _sections_for_display:
                 st.markdown("**Bölüm önizlemeleri (güvenilirlik skorları)**")
                 for _sb in _sections_for_display:
                     _sb_title = str(_sb.get("section_title") or "Section")
-                    with st.expander(f"📄 {_sb_title}", expanded=False):
-                        _render_faithfulness_badge(_sb.get("faithfulness"), section_title=_sb_title)
-                        _sb_trace = str((_sb.get("writer_metadata") or {}).get("traceability") or "").strip()
-                        if _sb_trace:
-                            with st.expander("TRACEABILITY (iç kontrol)", expanded=False):
-                                st.markdown(_sb_trace)
+                    st.markdown(f"---\n#### 📄 {_sb_title}")
+                    _render_faithfulness_badge(_sb.get("faithfulness"), section_title=_sb_title)
+                    _sb_trace = str((_sb.get("writer_metadata") or {}).get("traceability") or "").strip()
+                    if _sb_trace:
+                        with st.expander("TRACEABILITY (iç kontrol)", expanded=False):
+                            st.markdown(_sb_trace)
             combined = str(paper_result.get("combined_markdown") or "").strip()
             if combined:
                 st.session_state["full_paper_combined_md"] = combined

@@ -31,7 +31,7 @@ from retriever import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CHAT = "gemini-2.5-flash"  # .env / env GEMINI_CHAT_MODEL ile ezilir
+_DEFAULT_CHAT = "gemini-3.1-flash-lite-preview"  # .env / env GEMINI_CHAT_MODEL ile ezilir
 
 
 def _read_google_api_key() -> str:
