@@ -618,6 +618,7 @@ def write_markdown_with_ieee_styles(
     # IEEE Heading 1 (## / #) Roman numaralandirmasi — TRACEABILITY haric.
     h1_counter = 0
     col_break_injected = False
+    last_h1_normalized: str = ""
 
     def flush_code() -> None:
         if not code_lines:
@@ -765,7 +766,6 @@ def write_markdown_with_ieee_styles(
                 col_break_injected = True
             heading_text = f"{chr(65 + subsection_counter)}. {stripped[4:].strip()}"
             subsection_counter += 1
-            # IEEE Heading 2 italik gorunum: stil zaten italik tanimlasa da run.italic ile garanti.
             p = doc.add_paragraph(style=h2_style)
             run = p.add_run(heading_text)
             run.italic = True
@@ -896,7 +896,7 @@ def _strip_numpr_from_heading_styles(doc: DocumentObject) -> None:
     paragraflarina ve diger stillere DOKUNULMAZ (markdown'dan gelen numarali listeler
     veya Body Text gibi diger stiller etkilenmez).
     """
-    target_style_names = ("Heading 1", "Heading 2")
+    target_style_names = ("Heading 1", "Heading 2", "references")
     for style_name in target_style_names:
         try:
             style_el = doc.styles[style_name]._element

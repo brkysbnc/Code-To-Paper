@@ -414,15 +414,35 @@ def run_paper_pipeline(
 
             step = f"faithfulness_judge[{idx}]"
             try:
-                from agents.faithfulness_judge import judge_section_faithfulness 
+                from agents.faithfulness_judge import judge_section_faithfulness
 
+                # writer.py _split_traceability'den gelen traceability tail'i ilk tercih.
                 trace = meta.get("traceability", "").strip()
+                writer_text_full = str(writer_out.get("text", ""))
+
+                # Fallback: LLM 'TRACEABILITY:' marker'ini hic yazmamis veya farkli formatta yazmis olabilir.
+                # Bu durumda writer cevabinda '| C1 |' ya da '| Claim ID |' kalibini arariz; bulursak
+                # ham metni judge'a yine de geciririz cunku judge zaten regex ile claim satirlarini parse eder.
+                if not trace:
+                    has_claim_table = bool(
+                        re.search(r"\|\s*C\d+\s*\|", writer_text_full)
+                        or re.search(r"\|\s*Claim\s*ID\s*\|", writer_text_full, re.IGNORECASE)
+                    )
+                    if has_claim_table:
+                        logger.info(
+                            "Faithfulness judge [%s]: TRACEABILITY marker yok ama writer metninde "
+                            "claim tablosu bulundu, raw text ile devam ediliyor.",
+                            section_title,
+                        )
+                        trace = writer_text_full
+
                 if trace:
                     block["faithfulness"] = judge_section_faithfulness(
-                        writer_text=str(writer_out.get("text", "")),
+                        writer_text=writer_text_full,
                         writer_traceability=trace,
                         parent_documents=list(docs),
                         llm_invoke=_safe_invoke,
+                        user_literature_block=user_literature_block,
                     )
                     logger.info(
                         "Faithfulness judge [%s]: score=%.3f label=%s claims=%d",
@@ -432,14 +452,37 @@ def run_paper_pipeline(
                         block["faithfulness"]["claim_count"],
                     )
                 else:
-                    logger.debug("Faithfulness judge skipped (no traceability): %s", section_title)
+                    logger.warning(
+                        "Faithfulness judge skipped for '%s': writer 'TRACEABILITY:' marker'i uretmedi "
+                        "ve claim tablosu da bulunamadi (writer_text=%d karakter). Fallback low-score uygulanacak.",
+                        section_title,
+                        len(writer_text_full),
+                    )
+                    # Soft fallback: UI'da 'judge_unavailable' yerine deterministik dusuk skor goster.
+                    # Boylece kota/format sorunu yasansa da rapor akisi kopmaz.
+                    block["faithfulness"] = {
+                        "score": 0.0,
+                        "label": "low",
+                        "claim_count": 0,
+                        "claims": [],
+                        "raw_llm_response": "",
+                        "judge_note": "traceability_missing",
+                    }
             except Exception as _jex:  # noqa: BLE001
                 logger.warning(
                     "Faithfulness judge failed (soft, section='%s'): %s",
                     section_title,
                     _jex,
                 )
-                block["faithfulness"] = None
+                # Soft fallback: beklenmeyen exception'larda da skor yapisini koru.
+                block["faithfulness"] = {
+                    "score": 0.0,
+                    "label": "low",
+                    "claim_count": 0,
+                    "claims": [],
+                    "raw_llm_response": "",
+                    "judge_note": f"judge_exception:{type(_jex).__name__}",
+                }
 
             step = f"post_judge[{idx}]"
             section_blocks.append(block)

@@ -28,6 +28,19 @@ import re
 from pathlib import Path
 from typing import Callable
 
+
+def _normalize_path_for_evidence_match(raw: str) -> str:
+    """
+    TRACEABILITY tablosundaki source_file ile metadata file_path'i karsilastirmak icin yolu duzeltir.
+    Basit on ekler (./, /, \\) ve backslash'leri kaldirarak eslesmeyi guclendirir.
+    """
+    s = (raw or "").strip().lower().replace("\\", "/")
+    # Remove markdown backticks or quotes that the LLM might hallucinate
+    s = s.replace("`", "").replace('"', "").replace("'", "")
+    while s.startswith("./"):
+        s = s[2:]
+    return s.lstrip("/")
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -75,9 +88,15 @@ def _parse_traceability_rows(text: str) -> list[dict]:
         cid, summary, src, lines, notes = m.groups()
         if cid.strip().lower() == "claim id":  # header row
             continue
+        
+        # Normalize ID to always start with "C"
+        cid_clean = cid.strip().upper()
+        if not cid_clean.startswith("C"):
+            cid_clean = f"C{cid_clean}"
+
         rows.append(
             {
-                "id": cid.strip(),
+                "id": cid_clean,
                 "summary": summary.strip(),
                 "source_file": src.strip(),
                 "lines": lines.strip(),
@@ -91,10 +110,76 @@ def _parse_traceability_rows(text: str) -> list[dict]:
 # Step 2 — Build evidence map
 # ---------------------------------------------------------------------------
 
-def _find_evidence(claim: dict, parent_documents: list) -> str:
+def _source_matches_any_parent_document(target_raw: str, parent_documents: list) -> bool:
+    """
+    TRACEABILITY'deki Source file herhangi bir parent dokuman file_path'i ile eslesiyor mu.
+    Satir araligi kontrol edilmez; sadece dosya/yol eslemesi (Writer yanlis repo dosyasi yazdiginda
+    ozet-literatur fallback'inin ne zaman devreye girecegini ayirmak icin).
+    """
+    if not (target_raw or "").strip():
+        return False
+    target = _normalize_path_for_evidence_match(target_raw)
+    target_name = Path(target_raw.replace("\\", "/")).name.lower() if target_raw else ""
+    for d in parent_documents:
+        path_raw = str(d.metadata.get("file_path", "") or "")
+        if not path_raw.strip():
+            continue
+        path = _normalize_path_for_evidence_match(path_raw)
+        path_name = Path(path_raw.replace("\\", "/")).name.lower() if path_raw else ""
+        if (
+            bool(target and path and (target in path or path in target))
+            or bool(target and path and (path.endswith(target) or target.endswith(path)))
+            or bool(target_name and path_name and target_name == path_name)
+        ):
+            return True
+    return False
+
+
+def _find_evidence(
+    claim: dict,
+    parent_documents: list,
+    user_literature_block: str = "",
+) -> str:
     """Returns concatenated text of parent docs whose file_path and line range
     overlap with the claim's source. Empty string if none match."""
-    target = claim["source_file"].strip().lower()
+    target_raw = str(claim.get("source_file") or "").strip()
+    if target_raw.lower() == "user literature":
+        return (user_literature_block or "").strip()
+
+    # Writer bazen USER_LITERATURE_APPROVED kaynaklari icin PDF/txt dosya adini ("makale1.pdf")
+    # Source file sutununa yazar; repo path'i ile eslesmez -> kanit bos kalirdi.
+    # Yuklenen dokuman uzantisina sahip ve hicbir parent dokumanla eslesmiyorsa tum literatur blogunu kanit say.
+    if (user_literature_block or "").strip():
+        ext = Path(target_raw).suffix.lower()
+        if ext in (".pdf", ".txt", ".docx", ".md"):
+            tn = Path(target_raw.replace("\\", "/")).name.lower()
+            found_in_repo = False
+            for d in parent_documents:
+                fp = str(d.metadata.get("file_path", "") or "")
+                if not fp.strip():
+                    continue
+                pn = Path(fp.replace("\\", "/")).name.lower()
+                pnorm = _normalize_path_for_evidence_match(fp)
+                tnorm = _normalize_path_for_evidence_match(target_raw)
+                if tn == pn or (tnorm and pnorm and (tnorm in pnorm or pnorm in tnorm)):
+                    found_in_repo = True
+                    break
+            if not found_in_repo:
+                return (user_literature_block or "").strip()
+
+    # Writer bazen literatur iddialarini repo dosyasina yaziyor; kaynak hic parent'ta yoksa
+    # veya yanlis dosya yazilmissa, ozet metni USER_LITERATURE ile ortusuyorsa literaturu kanit say.
+    if (user_literature_block or "").strip() and target_raw.lower() != "user literature":
+        if not _source_matches_any_parent_document(target_raw, parent_documents):
+            summary = str(claim.get("summary") or "").lower()
+            summary_words = [w for w in summary.split() if len(w) > 4]
+            lit_lower = user_literature_block.lower()
+            matches = sum(1 for w in summary_words if w in lit_lower)
+            if summary_words and matches / len(summary_words) > 0.4:
+                return (user_literature_block or "").strip()
+
+    target = _normalize_path_for_evidence_match(target_raw)
+    target_name = Path(target_raw.replace("\\", "/")).name.lower() if target_raw else ""
     try:
         nums = re.findall(r"\d+", claim["lines"])[:2] or ["0", "0"]
         lo, hi = int(nums[0]), int(nums[1]) if len(nums) > 1 else int(nums[0])
@@ -103,9 +188,16 @@ def _find_evidence(claim: dict, parent_documents: list) -> str:
 
     parts: list[str] = []
     for d in parent_documents:
-        path = str(d.metadata.get("file_path", "")).lower()
-        # Flexible path match — handles full path containing the filename
-        if target not in path and path not in target:
+        path_raw = str(d.metadata.get("file_path", ""))
+        path = _normalize_path_for_evidence_match(path_raw)
+        path_name = Path(path_raw.replace("\\", "/")).name.lower() if path_raw else ""
+        # Esnek yol: alt yol / ters slash / sadece dosya adi varyantlari
+        path_matches = (
+            bool(target and path and (target in path or path in target))
+            or bool(target and path and (path.endswith(target) or target.endswith(path)))
+            or bool(target_name and path_name and target_name == path_name)
+        )
+        if not path_matches:
             continue
         s = int(d.metadata.get("start_line", 0) or 0)
         e = int(d.metadata.get("end_line", 0) or 0)
@@ -118,8 +210,21 @@ def _find_evidence(claim: dict, parent_documents: list) -> str:
 # Step 3 — Build batched judge prompt
 # ---------------------------------------------------------------------------
 
-def _build_judge_prompt(claims_with_evidence: list[dict]) -> str:
+def _build_judge_prompt(claims_with_evidence: list[dict], user_literature_block: str = "") -> str:
     """Constructs a single prompt covering all claims."""
+    header = _JUDGE_PROMPT_HEADER
+    if (user_literature_block or "").strip():
+        header += (
+            "\nUSER LITERATURE (external sources the writer was allowed to cite):\n"
+            "---\n"
+            f"{user_literature_block[:6000]}\n"
+            "---\n"
+            "Claims with Source file = 'User literature' must be verified against\n"
+            "the USER LITERATURE block above, NOT against the codebase.\n"
+            "A claim is SUPPORTED if its assertion is grounded in either the\n"
+            "codebase evidence OR the user literature, depending on its source.\n\n"
+        )
+
     sections: list[str] = []
     for c in claims_with_evidence:
         evidence = (c.get("evidence") or "")[:2000]
@@ -130,7 +235,7 @@ def _build_judge_prompt(claims_with_evidence: list[dict]) -> str:
             f"LINES: {c['lines']}\n"
             f"EVIDENCE TEXT (truncated to 2000 chars):\n---\n{evidence}\n---"
         )
-    return _JUDGE_PROMPT_HEADER + "\n\n".join(sections)
+    return header + "\n\n".join(sections)
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +278,17 @@ def _cache_key(writer_text: str, writer_traceability: str, parent_documents: lis
         str(d.metadata.get("file_path", "")) + ":" + str(d.metadata.get("start_line", ""))
         for d in parent_documents
     )
-    payload = writer_text + "\x00" + writer_traceability + "\x00" + "|".join(chunk_ids)
+    # traceability uzunlugu da anahtara dahil: ayni writer_text ile farkli tablo/kolon varyasyonlarinda
+    # eski 0.00 cache'e takilmayi azaltir.
+    payload = (
+        writer_text
+        + "\x00"
+        + writer_traceability
+        + "\x00"
+        + str(len(writer_traceability))
+        + "\x00"
+        + "|".join(chunk_ids)
+    )
     return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
 
 
@@ -213,6 +328,7 @@ def judge_section_faithfulness(
     parent_documents: list,
     llm_invoke: Callable[[str], str],
     max_claims: int = 12,
+    user_literature_block: str = "",
 ) -> dict:
     """
     Verifies each claim in the TRACEABILITY table against parent document evidence.
@@ -249,6 +365,10 @@ def judge_section_faithfulness(
             "score": 0.0,
             "label": "low",
             "claim_count": 0,
+            "code_claims_total": 0,
+            "code_claims_supported": 0,
+            "literature_claims_total": 0,
+            "literature_claims_supported": 0,
             "claims": [],
             "raw_llm_response": "",
         }
@@ -259,7 +379,7 @@ def judge_section_faithfulness(
     claims_with_evidence: list[dict] = []
     no_evidence_ids: set[str] = set()
     for claim in claims:
-        evidence = _find_evidence(claim, parent_documents)
+        evidence = _find_evidence(claim, parent_documents, user_literature_block)
         claims_with_evidence.append({**claim, "evidence": evidence})
         if not evidence.strip():
             no_evidence_ids.add(claim["id"])
@@ -288,7 +408,7 @@ def judge_section_faithfulness(
     llm_verdicts: list[dict] = []
 
     if llm_candidates:
-        prompt = _build_judge_prompt(llm_candidates)
+        prompt = _build_judge_prompt(llm_candidates, user_literature_block)
         try:
             raw_llm_response = llm_invoke(prompt)
             parsed = _extract_json_object(raw_llm_response)
@@ -307,8 +427,14 @@ def judge_section_faithfulness(
                     "judge_note": f"judge_llm_error: {str(exc)[:80]}",
                 }
 
-    # Index LLM verdicts by claim id
-    llm_verdict_by_id: dict[str, dict] = {v["id"]: v for v in llm_verdicts if isinstance(v, dict)}
+    # Index LLM verdicts by claim id (robustly map "1" to "C1")
+    llm_verdict_by_id: dict[str, dict] = {}
+    for v in llm_verdicts:
+        if isinstance(v, dict):
+            vid = str(v.get("id", "")).strip().upper()
+            if not vid.startswith("C") and vid.isdigit():
+                vid = f"C{vid}"
+            llm_verdict_by_id[vid] = v
 
     # --- Assemble final claim list in original order ---
     final_claims: list[dict] = []
@@ -343,10 +469,32 @@ def judge_section_faithfulness(
 
     score, label = _aggregate(all_verdicts_for_score)
 
+    code_claims_total = 0
+    code_claims_supported = 0
+    literature_claims_total = 0
+    literature_claims_supported = 0
+
+    for c in final_claims:
+        src = c.get("source_file", "").strip().lower()
+        is_lit = (src == "user literature")
+        verdict = c.get("verdict", "")
+        if is_lit:
+            literature_claims_total += 1
+            if verdict == "supported":
+                literature_claims_supported += 1
+        else:
+            code_claims_total += 1
+            if verdict == "supported":
+                code_claims_supported += 1
+
     result = {
         "score": score,
         "label": label,
         "claim_count": len(final_claims),
+        "code_claims_total": code_claims_total,
+        "code_claims_supported": code_claims_supported,
+        "literature_claims_total": literature_claims_total,
+        "literature_claims_supported": literature_claims_supported,
         "claims": final_claims,
         "raw_llm_response": raw_llm_response,
     }

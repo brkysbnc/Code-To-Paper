@@ -36,6 +36,13 @@ def _extract_references_from_body(text: str) -> tuple[str, list[str]]:
     return cleaned, refs
 
 
+def _extract_title_key(ref: str) -> str:
+    m = re.search(r'["\u201c](.+?)["\u201d]', ref)
+    if m:
+        return " ".join(m.group(1).lower().split())
+    return ""
+
+
 def _dedupe_references(all_refs: list[str]) -> list[str]:
     """
     URL bazli oncelikli tekille me; URL bulunmayan referanslarda kucuk-harf normalize
@@ -45,6 +52,7 @@ def _dedupe_references(all_refs: list[str]) -> list[str]:
     url_re = re.compile(r'https?://[^\s,\]]+')
     seen_urls: set[str] = set()
     seen_text: set[str] = set()
+    seen_titles: set[str] = set()
     out: list[str] = []
     for r in all_refs:
         m = url_re.search(r)
@@ -58,6 +66,13 @@ def _dedupe_references(all_refs: list[str]) -> list[str]:
             if key in seen_text:
                 continue
             seen_text.add(key)
+            
+        title_key = _extract_title_key(r)
+        if title_key and title_key in seen_titles:
+            continue
+        if title_key:
+            seen_titles.add(title_key)
+            
         out.append(r)
     return out
 
@@ -86,6 +101,28 @@ def _strip_traceability_tables(text: str) -> str:
             out.append(line)
     return "\n".join(out)
 
+def _strip_inline_references_section(text: str) -> str:
+    """
+    Removes any '## References' or '### References' heading and
+    the [n] citation lines that follow it from the body text.
+    These belong in the unified References section at the end.
+    """
+    lines = text.splitlines()
+    out = []
+    skip = False
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r'^#{1,3}\s+References\s*$', stripped, re.IGNORECASE):
+            skip = True
+            continue
+        if skip:
+            if re.match(r'^\[\d+\]', stripped) or stripped == '':
+                continue
+            else:
+                skip = False
+        out.append(line)
+    return '\n'.join(out)
+
 # (bolum basligi, bolum hedefi) — hedefler CONTEXT ile uyumlu kisa talimat olmali.
 # Tam makale Markdown birlestirmesinde Writer henuz uretmiyorsa kullanilan varsayilanlar.
 DEFAULT_COMBINED_PAPER_TITLE = "Code-to-Paper — combined draft"
@@ -99,8 +136,28 @@ DEFAULT_COMBINED_KEYWORDS_PLACEHOLDER = (
 DEFAULT_PAPER_SECTIONS: list[tuple[str, str]] = [
     (
         "Introduction and motivation",
-        "Introduce the automated code-to-paper workflow and the analyzed repository as the "
-        "subject system; state scope and intended reader takeaway using only evidenced facts.",
+        "Write a multi-paragraph Introduction of at least 350 words. "
+        "Do NOT use generic academic openings like 'The rapid evolution of...' or "
+        "'In recent years...'. Structure as follows: "
+        "(a) Paragraph 1: open with a specific, concrete problem statement "
+        "grounded in repository evidence — what pain point does this system address? "
+        "(b) Paragraph 2: background and motivation — why is this problem hard? "
+        "what existing approaches fall short? "
+        "(c) Paragraph 3: explicit contribution statement — begin with exactly "
+        "the phrase 'The contributions of this paper are:' and list 2-3 "
+        "specific technical contributions visible in the repository. "
+        "(d) Final paragraph: paper structure roadmap — what the reader will "
+        "find in each section. "
+        "The Introduction must NOT summarize the paper like an abstract. "
+        "Total length must be longer than the abstract.",
+    ),
+    (
+        "Literature Review",
+        "Review the uploaded literature sources: summarize what each "
+        "cited work addresses and achieves, identify the specific gap "
+        "they leave uncovered, then explain how the analyzed repository "
+        "fills that gap using only evidence from CONTEXT and "
+        "USER_LITERATURE_APPROVED. Do not invent claims.",
     ),
     (
         "System architecture and implementation",
@@ -153,6 +210,7 @@ def combine_paper_markdown(
         body = str(block.get("writer_text") or "").strip()
         cleaned_body, section_refs = _extract_references_from_body(body)
         cleaned_body = _strip_traceability_tables(cleaned_body)
+        cleaned_body = _strip_inline_references_section(cleaned_body)
         all_refs.extend(section_refs)
         lines.append(f"## {section_heading}")
         lines.append("")
@@ -171,56 +229,6 @@ def combine_paper_markdown(
             lines.append(f"[{i}] {ref}")
         lines.append("")
 
-    audit_chunks: list[str] = []
-    total_weight = 0
-    weighted_sum = 0.0
-    for block in section_results:
-        f = block.get("faithfulness")
-        if not f:
-            continue
-        count = int(f.get("claim_count") or 0)
-        if count == 0:
-            continue
-        weighted_sum += float(f.get("score", 0.0)) * count
-        total_weight += count
-        sec_heading = str(block.get("section_title") or "Section").strip()
-        sec_label = f.get("label", "low")
-        sec_score = f.get("score", 0.0)
-        chunk_lines: list[str] = [
-            f"### {sec_heading}",
-            "",
-            f"Faithfulness score: {sec_score:.2f} ({sec_label})",
-            "",
-            "| Claim | Verdict | Source | Notes |",
-            "|-------|---------|--------|-------|",
-        ]
-        for c in (f.get("claims") or []):
-            verdict = str(c.get("verdict", "unsupported"))
-            verdict_icon = {"supported": "✓", "partial": "~", "unsupported": "✗"}.get(verdict, "?")
-            src = f"{c.get('source_file', '')} : {c.get('lines', '')}"
-            note = (c.get("judge_note") or "").replace("|", "\\|")
-            cid = c.get("id", "")
-            summary = (c.get("summary") or "")[:80]
-            chunk_lines.append(f"| {cid}: {summary} | {verdict_icon} {verdict} | {src} | {note} |")
-        chunk_lines.append("")
-        audit_chunks.append("\n".join(chunk_lines))
-
-    if audit_chunks:
-        paper_score: float | None = None
-        paper_label: str | None = None
-        if total_weight > 0:
-            paper_score = round(weighted_sum / total_weight, 3)
-            paper_label = "high" if paper_score >= 0.8 else "medium" if paper_score >= 0.6 else "low"
-        lines.append("---")
-        lines.append("")
-        lines.append("## Faithfulness Audit")
-        lines.append("")
-        if paper_score is not None:
-            lines.append(f"Aggregate paper-wide faithfulness: {paper_score:.2f} ({paper_label}).")
-        else:
-            lines.append("Aggregate paper-wide faithfulness: unavailable.")
-        lines.append("")
-        lines.extend(audit_chunks)
 
     if trace_chunks:
         lines.append("---")

@@ -706,7 +706,9 @@ def _render_agent_preview_panel() -> None:
                 )
                 _faith_col1, _faith_col2, _faith_col3, _faith_col4 = st.columns(4)
                 _faith_col1.metric("Bölüm sayısı", n_sec)
-                _faith_col2.metric("İndekslenen dosya", totals.get('files', 0))
+                # `files` bu oturumda islenen dosya sayisidir; indeks yeniden kullanilinca 0 kalir.
+                # Gercek indeks boyutunu parent parca sayisi (Chroma/docstore) ile gosteriyoruz.
+                _faith_col2.metric("Toplam Blok (Parent)", int(totals.get("parents", 0) or 0))
                 _faith_col3.metric("Toplam iddia (claim)", _pw_claims)
                 if _pw_score is not None:
                     _faith_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(_pw_label, "⚫")
@@ -716,10 +718,20 @@ def _render_agent_preview_panel() -> None:
                     )
                 else:
                     _faith_col4.metric("Makale geneli güvenilirlik", "— (judge_unavailable)")
-                st.success(
-                    f"Tam makale tamamlandi (bolum sayisi={n_sec}). "
-                    f"{totals.get('files', 0)} dosya indekslendi."
-                )
+                _f_ct = int(totals.get("files", 0) or 0)
+                _p_ct = int(totals.get("parents", 0) or 0)
+                _reused_flg = bool(totals.get("reused"))
+                if _reused_flg and _f_ct == 0:
+                    st.success(
+                        f"Tam makale tamamlandi (bolum sayisi={n_sec}). "
+                        f"Indeks yeniden kullanildi; indekste yaklasik {_p_ct} parent parca var "
+                        f"(bu calistirmada yeni dosya islenmedi)."
+                    )
+                else:
+                    st.success(
+                        f"Tam makale tamamlandi (bolum sayisi={n_sec}). "
+                        f"Bu oturumda {_f_ct} dosya islendi; toplam {_p_ct} parent parca."
+                    )
             for sb in paper_result.get("sections") or []:
                 rs = sb.get("retrieval_status")
                 if rs in ("empty_after_retry",):

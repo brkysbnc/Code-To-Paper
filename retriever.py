@@ -433,10 +433,10 @@ def build_parent_child_retriever(
     docstore_dir: str | None = None,
 ):
     """
-    Chroma + (LocalFileStore || InMemoryStore) + ParentDocumentRetriever yapısını kurar.
+    Chroma + parent docstore + ParentDocumentRetriever yapısını kurar.
 
-    docstore_dir verilirse parent dokumanlari diske yazilir ve oturumlar arasi tasinir
-    (free-tier embedding kotasini korumak icin gerekli; aksi halde her restart yeniden embedding ister).
+    docstore_dir verilirse kalici LocalFileStore kullanilir (langchain-classic zorunlu).
+    docstore_dir None ise gelistirme/test icin InMemoryStore kullanilir.
 
     Returns:
         tuple[ParentDocumentRetriever, store, Chroma]
@@ -457,7 +457,14 @@ def build_parent_child_retriever(
         embedding_function=embeddings,
         persist_directory=persist_directory,
     )
-    if docstore_dir and LocalFileStore is not None and create_kv_docstore is not None:
+    # Kalici docstore zorunlu: Chroma diskte kalip InMemory docstore kullanilirsa
+    # vektorler parent metnine map edilemez (yargi/writer'da 'kanit yok' zinciri).
+    if docstore_dir:
+        if LocalFileStore is None or create_kv_docstore is None:
+            raise RuntimeError(
+                "Kalici parent docstore icin langchain-classic gerekli. "
+                "Komut: pip install langchain-classic"
+            )
         store = create_kv_docstore(LocalFileStore(docstore_dir))
     else:
         store = InMemoryStore()

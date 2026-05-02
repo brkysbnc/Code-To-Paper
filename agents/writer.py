@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any, Callable, Dict, List
 
 from langchain_core.documents import Document
@@ -51,13 +52,58 @@ CRITICAL RULES:
      Threshold", "Rate-Limited Embedding Pipeline").
    Exception — Introduction and Conclusion: write as flowing prose,
    no ### subheadings at all, no Mermaid diagram.
-   Exception — Literature Review / Related Work: one ### per major
-   cited theme or source group, grounded in USER_LITERATURE_APPROVED.
+   Exception — when Section Title is exactly 'Literature Review'
+   or exactly 'Related Work':
+     Write THREE paragraphs in this exact order:
+     1) EXISTING WORK: Summarize each cited source from
+        USER_LITERATURE_APPROVED in 2-3 sentences. Cover: problem
+        they addressed, method used, result achieved. Use [n] citations.
+        Do NOT invent. If a source says nothing about a topic, skip it.
+     2) THE GAP: State what the cited works collectively do NOT address,
+        grounded only in what USER_LITERATURE_APPROVED contains.
+        Be specific — name the missing capability (e.g. 'None of the
+        cited works address automated IEEE-format generation from
+        GitHub source code repositories').
+     3) OUR CONTRIBUTION: Explain how the analyzed repository [1]
+        addresses the gap. Connect to specific implementation details
+        from CONTEXT (e.g. parent-child chunking in Chroma, multi-query
+        retrieval, faithfulness judge). Cite [1] for implementation.
+        Do NOT claim features not in CONTEXT.
+     OPTIONAL TABLE: Add a comparison table ONLY if 2+ cited works
+     exist AND you can fill at least 3 rows with real data from
+     USER_LITERATURE_APPROVED and CONTEXT. Otherwise omit entirely.
+     NO Mermaid diagram in Literature Review.
+     ABSOLUTE PROHIBITION: Do NOT write any ### subheading whose
+     text matches or closely resembles the section title
+     'Literature Review' or 'Related Work'. This includes variations
+     like 'A. Literature Review', 'Overview of Literature', or
+     'Literature and Background'. Violating this rule makes the
+     document look broken.
+     The THREE paragraphs (EXISTING WORK, THE GAP, OUR CONTRIBUTION)
+     must be written as continuous prose with NO ### subheadings
+     between them. Only add a ### subheading if you are inserting
+     a comparison TABLE, and in that case the subheading must
+     describe the table content specifically (e.g.
+     '### Comparison of Automated Report Generation Approaches').
 
 4b. SUBHEADING FORMAT: When you write ### subheadings, write ONLY
     the title text. Do NOT prefix with A. B. C. or Roman numerals.
     Do NOT write "### A. Pipeline Design" — write "### Pipeline Design".
     The export layer adds letter prefixes automatically.
+
+4c. SUBHEADING UNIQUENESS: The FIRST ### subheading of any section
+     MUST NOT repeat or paraphrase the section title.
+     - If Section Title is 'System architecture and implementation',
+       do NOT write '### System Architecture and Implementation' or
+       '### System Overview' as the first subheading.
+     - If Section Title is 'Literature Review', do NOT write
+       '### Literature Review' or '### Related Work' as any subheading.
+     - Instead, the first subheading must immediately name a SPECIFIC
+       technical component or theme (e.g. '### Repository Ingestion
+       Pipeline', '### Parent-Child Chunking Strategy').
+     - If you cannot think of a specific subheading that adds value
+       beyond the section title, write the content as prose without
+       any subheading.
 
 5. MERMAID: You MAY include one optional fenced Mermaid diagram
    (first line inside fence MUST be: graph TD) ONLY IF the diagram
@@ -67,6 +113,17 @@ CRITICAL RULES:
    Exception — Introduction and Conclusion: never include Mermaid.
    Exception — Literature Review / Related Work: never include Mermaid.
 6. DO NOT invent libraries, services, or features not present in the context.
+7. ANTI-REPETITION (Introduction only): When writing Introduction,
+   you will NOT have access to the abstract text, but assume one exists.
+   The Introduction MUST NOT start with 'The rapid', 'This paper',
+   'In recent years', 'The growing', or any other cliché academic
+   opening. Instead:
+   - Open with a CONCRETE PROBLEM STATEMENT grounded in CONTEXT
+     (e.g. a specific gap, a specific pain point visible in the code).
+   - The Introduction must cover motivation, scope, and structure
+     of the paper — NOT repeat what an abstract would say.
+   - Minimum 2 paragraphs. Second paragraph must describe what the
+     reader will find in each section of the paper (roadmap).
 
 OUTPUT — IN THIS ORDER (labels help downstream parsing):
 PART 1 — PAPER BODY
@@ -74,6 +131,7 @@ PART 1 — PAPER BODY
 
 PART 2 — REFERENCES
 (Short IEEE-like list; [1] MUST use the repository URL when provided below; do not invent URLs.
+For [1] (the repository): the author is the GitHub username or profile name from the repository URL, NOT any name from USER_LITERATURE_APPROVED. Do not assign literature authors to the repository citation. If the owner name is unclear from the URL, write the GitHub username as-is.
 If USER_LITERATURE_APPROVED contained [2], [3], … include concise entries for those user-provided sources without fabricating publishers or URLs.)
 
 PART 3 — TRACEABILITY
@@ -81,7 +139,23 @@ Start this subsection with a line containing only:
 TRACEABILITY:
 Then a markdown table with columns:
 | Claim ID | Claim summary | Source file | Lines | Notes |
-Map substantive BODY claims to CONTEXT locations (repository code). Paths/lines appear ONLY here and in CONTEXT, not in PART 1. For claims supported only by USER_LITERATURE_APPROVED, use Source file = `User literature`, Lines = `n/a`, and cite the matching [n] in Notes.
+
+CRITICAL — SOURCE FILE RULES FOR TRACEABILITY TABLE:
+- If the claim is based on code you read in CONTEXT:
+  Source file = the actual file path (e.g. agents/writer.py)
+- If the claim is based on USER_LITERATURE_APPROVED:
+  Source file = User literature   ← EXACTLY these two words
+  Lines = n/a
+  WRONG examples (never do this):
+    Source file = makale1.pdf
+    Source file = [2]
+    Source file = external
+  CORRECT example:
+    | C3 | RAG improves grounding | User literature | n/a | See [2] |
+- If you are not sure which source supports a claim, write
+  [Insufficient evidence] in the body and omit the claim from TRACEABILITY.
+
+Map substantive BODY claims to CONTEXT or USER_LITERATURE_APPROVED only. Paths/lines appear ONLY here and in CONTEXT, not in PART 1.
 
 CONTEXT:
 {context_blocks}
@@ -131,12 +205,23 @@ CONTEXT:
     @staticmethod
     def _split_traceability(raw: str) -> tuple[str, str]:
         """
-        LLM ciktisinda yalnizca 'TRACEABILITY:' satirindan sonraki izleme tablosunu ayirir.
-        Aksi halde 'PART 3 — TRACEABILITY:' gibi basliklar yanlis eslesirdi.
+        LLM ciktisinda 'TRACEABILITY:' marker satirini bulup sonraki tabloyu ayirir.
+
+        Esnek match: preview modelin uretebilecegi varyantlari da kabul eder:
+          - 'TRACEABILITY:'
+          - '**TRACEABILITY:**'  (markdown bold)
+          - '## TRACEABILITY'    (markdown header)
+          - 'PART 3 — TRACEABILITY:' (prefix korumali)
+          - 'TRACEABILITY' (sondaki ':' eksik)
+        Body icinde gecen 'traceability' kelimesi ile false-positive vermesin diye
+        marker yalniz tek satir olmali (line.strip() sonrasi sadece TRACEABILITY).
         """
         lines = raw.splitlines()
         for i, line in enumerate(lines):
-            if line.strip() == "TRACEABILITY:":
+            clean = re.sub(r"^[\s#*_`\-]+", "", line)
+            clean = re.sub(r"^PART\s*\d+\s*[—\-–:]\s*", "", clean, flags=re.IGNORECASE)
+            clean = re.sub(r"[\s*_`]+$", "", clean.strip())
+            if re.match(r"^TRACEABILITY\s*:?\s*$", clean, flags=re.IGNORECASE):
                 body = "\n".join(lines[:i]).strip()
                 tail = "\n".join(lines[i:]).strip()
                 return body, tail

@@ -39,9 +39,17 @@ Produce TWO pieces of metadata in JSON format:
    - Use specific technical terms found in BODY or CONTEXT.
 
 2) ABSTRACT: A single paragraph in IEEE style.
-   - STRICT MAXIMUM 250 WORDS.
-   - Use ONLY facts present in BODY or CONTEXT. Do NOT invent numbers or benchmarks.
+   - LENGTH & COMPLETENESS: The abstract must be thorough and complete — aim for 200-250 words. Do NOT artificially pad with filler sentences. Instead, ensure each of the four required questions is answered with sufficient technical detail: the problem should include a concrete example or context, the method should name at least two specific technical components from the system, the results should include at least one concrete finding or trade-off, and the significance should explain who benefits and why. If you finish all four points and have fewer than 200 words, expand the technical depth of your weakest point — do not repeat yourself.
+   - REQUIRED CONTENT: It must answer four questions: (1) What problem does this work solve? (2) How is it solved? (3) What are the key results or findings? (4) Why does it matter?
+   - QUALITY & TONE: Write the abstract for a human reader first, not a machine. Avoid overly technical jargon in the opening sentence. Start with the problem being solved in plain language. Progress from problem → method → result → significance. Include at least one concrete finding or metric if available from the retrieved context. The tone should be accessible to a conference attendee who is not yet familiar with the system.
+   - Use ONLY facts present in BODY or CONTEXT. Do NOT invent numbers.
    - Include domain-specific technical terms (e.g. RAG, ChromaDB, OOXML).
+   - FORBIDDEN OPENINGS: Do NOT start with any of these patterns:
+     'The rapid', 'This paper presents', 'In recent years',
+     'The growing', 'With the advent', 'As technology evolves'.
+     Start instead with the SYSTEM NAME or the CORE CONTRIBUTION.
+   - Do NOT copy or paraphrase sentences from the Introduction section
+     in BODY. The abstract must be independently written.
 
 REPO URL:
 {repo_url}
@@ -96,6 +104,54 @@ _KNOWN_TERMS: list[tuple[str, str]] = [
     ("Embedding", r"\bembeddings?\b"),
     ("Retrieval-Augmented Generation", r"\bretrieval[\- ]augmented generation\b"),
 ]
+
+
+# Kısaltma → açılım eşleşmeleri (her ikisi de keyword listesine girerse
+# sadece kısaltma kalır). Küçük harf anahtarlar.
+_ABBREVIATION_EXPANSIONS: dict[str, str] = {
+    "rag": "retrieval-augmented generation",
+    "llm": "large language model",
+    "ieee": "institute of electrical and electronics engineers",
+    "json": "javascript object notation",
+    "api": "application programming interface",
+    "nlp": "natural language processing",
+    "mas": "multi-agent system",
+}
+
+
+def deduplicate_keywords(keywords: list[str]) -> list[str]:
+    """
+    Keyword listesinden kısaltma+açılım tekrarlarını temizler.
+    İki strateji:
+    1) Explicit eşleşme tablosu (_ABBREVIATION_EXPANSIONS): bilinen çiftlerde
+       kısaltmayı tutar, açılımı atar.
+    2) Substring fallback: biri diğerinin içinde geçiyorsa kısa olanı tutar.
+    """
+    result = []
+    lower_map = {kw.lower(): kw for kw in keywords}
+    removed: set[str] = set()
+
+    # Strateji 1: Explicit eşleşme tablosu
+    for abbr_lower, expansion_lower in _ABBREVIATION_EXPANSIONS.items():
+        if abbr_lower in lower_map and expansion_lower in lower_map:
+            # İkisi de varsa açılımı kaldır, kısaltmayı tut
+            removed.add(expansion_lower)
+
+    # Strateji 2: Substring fallback (explicit tabloda olmayan çiftler için)
+    kw_list = [kw for kw in keywords if kw.lower() not in removed]
+    for i, kw in enumerate(kw_list):
+        for j, other in enumerate(kw_list):
+            if i == j or other.lower() in removed:
+                continue
+            if kw.lower() in other.lower() and len(kw) < len(other):
+                # kw, other'ın içinde geçiyor → other açılım, kw kısaltma
+                removed.add(other.lower())
+
+    for kw in keywords:
+        if kw.lower() not in removed:
+            result.append(kw)
+
+    return result
 
 
 def extract_keywords_from_abstract(abstract: str, max_keywords: int = 6) -> str:
@@ -156,6 +212,7 @@ def extract_keywords_from_abstract(abstract: str, max_keywords: int = 6) -> str:
             if len(found) >= max_keywords:
                 break
 
+    found = deduplicate_keywords(found)
     return ", ".join(found[:max_keywords])
 
 
@@ -239,6 +296,12 @@ class MetadataWriter:
         title = str(data.get("title") or "").strip()
         abstract_raw = str(data.get("abstract") or "").strip()
         abstract = MetadataWriter._enforce_word_cap(abstract_raw, 250)
+        if not MetadataWriter._check_minimum_words(abstract, 150):
+            logger.warning(
+                "Abstract minimum kelime sayısını karşılamıyor: %d kelime (min 150). "
+                "Abstract kısa kalmış olabilir.",
+                len(abstract.split()) if abstract else 0,
+            )
         return {
             "title": title,
             "abstract": abstract,
@@ -254,3 +317,10 @@ class MetadataWriter:
         if len(tokens) <= max_words:
             return text
         return " ".join(tokens[:max_words]).rstrip(",;:.- ") + "."
+
+    @staticmethod
+    def _check_minimum_words(text: str, min_words: int) -> bool:
+        """Abstract'in minimum kelime sayısını karşılayıp karşılamadığını kontrol eder."""
+        if not text:
+            return False
+        return len(text.split()) >= min_words
