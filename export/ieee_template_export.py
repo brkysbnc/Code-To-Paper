@@ -618,7 +618,8 @@ def write_markdown_with_ieee_styles(
     # IEEE Heading 1 (## / #) Roman numaralandirmasi — TRACEABILITY haric.
     h1_counter = 0
     col_break_injected = False
-    last_h1_normalized: str = ""
+    last_h1_text = ""
+    first_subheading_seen = False
 
     def flush_code() -> None:
         if not code_lines:
@@ -734,6 +735,9 @@ def write_markdown_with_ieee_styles(
                 append_column_transition_paragraph(doc, col_break_sectpr)
                 col_break_injected = True
             subsection_counter = 0
+            last_h1_text = re.sub(r'[^\w\s]', '', heading_raw.lower())
+            last_h1_text = re.sub(r'\s+', ' ', last_h1_text).strip()
+            first_subheading_seen = False
             h1_counter += 1
             heading_text = f"{_to_roman_numeral(h1_counter)}. {heading_raw}"
             p = doc.add_paragraph(heading_text, style=h1_style)
@@ -754,6 +758,9 @@ def write_markdown_with_ieee_styles(
                 append_column_transition_paragraph(doc, col_break_sectpr)
                 col_break_injected = True
             subsection_counter = 0
+            last_h1_text = re.sub(r'[^\w\s]', '', heading_raw.lower())
+            last_h1_text = re.sub(r'\s+', ' ', last_h1_text).strip()
+            first_subheading_seen = False
             h1_counter += 1
             heading_text = f"{_to_roman_numeral(h1_counter)}. {heading_raw}"
             p = doc.add_paragraph(heading_text, style=h1_style)
@@ -761,10 +768,25 @@ def write_markdown_with_ieee_styles(
             continue
 
         if stripped.startswith("### "):
+            heading_candidate = stripped[4:].strip()
+            if not first_subheading_seen:
+                cand_norm = re.sub(r'[^\w\s]', '', heading_candidate.lower())
+                cand_norm = re.sub(r'\s+', ' ', cand_norm).strip()
+                is_duplicate = False
+                if cand_norm == last_h1_text:
+                    is_duplicate = True
+                elif last_h1_text and (cand_norm in last_h1_text or last_h1_text in cand_norm) and abs(len(cand_norm) - len(last_h1_text)) < 10:
+                    is_duplicate = True
+                
+                if is_duplicate:
+                    first_subheading_seen = True
+                    continue
+            
+            first_subheading_seen = True
             if author_block is None and col_break_sectpr is not None and not col_break_injected:
                 append_column_transition_paragraph(doc, col_break_sectpr)
                 col_break_injected = True
-            heading_text = f"{chr(65 + subsection_counter)}. {stripped[4:].strip()}"
+            heading_text = f"{chr(65 + subsection_counter)}. {heading_candidate}"
             subsection_counter += 1
             p = doc.add_paragraph(style=h2_style)
             run = p.add_run(heading_text)
