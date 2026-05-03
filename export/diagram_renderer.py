@@ -40,13 +40,28 @@ _DIAGRAM_TYPES = ("context", "class", "er")
 _PROMPTS: dict[str, str] = {
     "context": (
         "You are a software architecture expert. "
-        "Given the following repository context, generate a Mermaid **graph TD** "
-        "(context/system diagram) that shows the main components and their relationships.\n\n"
-        "Rules:\n"
-        "- Output ONLY the raw Mermaid code, no markdown fences, no explanation.\n"
-        "- Start with exactly: graph TD\n"
-        "- Use short, descriptive node labels.\n"
-        "- Keep the diagram focused (5-12 nodes max).\n\n"
+        "Given the following repository context, generate a Mermaid flowchart diagram "
+        "that shows the main components and their relationships.\n\n"
+        "STRICT Rules — violating any rule will cause a render error:\n"
+        "- Output ONLY the raw Mermaid code. No markdown fences, no prose, no explanation.\n"
+        "- The very first line MUST be exactly: graph TD\n"
+        "- Node IDs must be plain alphanumeric strings with no spaces (e.g. Writer, RAGRetriever).\n"
+        "- Node labels must use square brackets and contain only plain text: Writer[Academic Writer]\n"
+        "- Do NOT use parentheses (), angle brackets <>, curly braces {{}}, or pipes | in labels.\n"
+        "- Edge labels (if any) must use simple quoted strings: A -->|calls| B\n"
+        "- Do NOT put special characters like colons, slashes, or dots inside node labels.\n"
+        "- Keep the diagram focused: 6-10 nodes max.\n\n"
+        "Example of correct syntax:\n"
+        "graph TD\n"
+        "    UI[Streamlit UI]\n"
+        "    Fetcher[GitHub Fetcher]\n"
+        "    Retriever[RAG Retriever]\n"
+        "    Writer[Academic Writer]\n"
+        "    Exporter[IEEE Exporter]\n"
+        "    UI -->|clone repo| Fetcher\n"
+        "    Fetcher --> Retriever\n"
+        "    Retriever --> Writer\n"
+        "    Writer --> Exporter\n\n"
         "Repository context:\n{repo_context}"
     ),
     "class": (
@@ -55,8 +70,9 @@ _PROMPTS: dict[str, str] = {
         "that shows the main classes/modules and their relationships.\n\n"
         "Rules:\n"
         "- Output ONLY the raw Mermaid code, no markdown fences, no explanation.\n"
-        "- Start with exactly: classDiagram\n"
-        "- Include key methods and attributes where apparent.\n"
+        "- The very first line MUST be exactly: classDiagram\n"
+        "- Class names must be plain alphanumeric identifiers (no spaces).\n"
+        "- Method signatures should be simple: +generate_section(prompt) str\n"
         "- Keep the diagram focused (4-10 classes max).\n\n"
         "Repository context:\n{repo_context}"
     ),
@@ -66,18 +82,26 @@ _PROMPTS: dict[str, str] = {
         "that shows the main data entities and their relationships.\n\n"
         "Rules:\n"
         "- Output ONLY the raw Mermaid code, no markdown fences, no explanation.\n"
-        "- Start with exactly: erDiagram\n"
-        "- Use realistic entity names derived from the codebase.\n"
+        "- The very first line MUST be exactly: erDiagram\n"
+        "- Entity names must be plain uppercase alphanumeric identifiers (no spaces).\n"
+        "- Attribute types must be simple: string, int, bool\n"
         "- Keep the diagram focused (3-8 entities max).\n\n"
         "Repository context:\n{repo_context}"
     ),
 }
 
-# Expected first tokens for each diagram type (used for validation)
+# Expected first tokens for each diagram type (used for validation and sanitization)
 _EXPECTED_STARTS: dict[str, tuple[str, ...]] = {
-    "context": ("graph td", "graph TD"),
-    "class": ("classdiagram", "classDiagram"),
-    "er": ("erdiagram", "erDiagram"),
+    "context": ("graph td", "graph lr", "graph rl", "graph tb", "graph bt", "flowchart"),
+    "class": ("classdiagram",),
+    "er": ("erdiagram",),
+}
+
+# Canonical first line that must appear in the output for each type
+_ANCHOR_LINES: dict[str, tuple[str, ...]] = {
+    "context": ("graph TD", "graph LR", "graph RL", "graph TB", "graph BT", "flowchart TD", "flowchart LR"),
+    "class": ("classDiagram",),
+    "er": ("erDiagram",),
 }
 
 
@@ -85,14 +109,62 @@ _EXPECTED_STARTS: dict[str, tuple[str, ...]] = {
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _strip_mermaid_fences(text: str) -> str:
-    """Remove leading/trailing ```mermaid or ``` fences if present."""
+
+def _sanitize_mermaid(diagram_type: str, text: str) -> str:
+    """
+    Robustly extract valid Mermaid code from raw LLM output.
+
+    Steps:
+    1. Strip all ```mermaid / ``` fences (handles nested or multiple fences).
+    2. Find the first line that matches the expected diagram-type keyword
+       (e.g. "graph TD", "classDiagram", "erDiagram") — discards any LLM
+       preamble such as "Here is the diagram:" or explanation text.
+    3. Return everything from that anchor line onward, stripped of trailing
+       whitespace.
+
+    Returns empty string if no anchor line is found.
+    """
+    if not text:
+        return ""
+
+    # --- Step 1: strip all markdown code fences ---
+    # Replace ```mermaid ... ``` and ``` ... ``` blocks with their inner content.
+    text = re.sub(
+        r"```(?:mermaid)?[ \t]*\r?\n?",  # opening fence
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"```[ \t]*\r?\n?", "", text)  # closing fence
     text = text.strip()
-    # Remove ```mermaid ... ``` or ``` ... ```
-    fenced = re.match(r"^```(?:mermaid)?\s*\n?([\s\S]*?)```\s*$", text, re.IGNORECASE)
-    if fenced:
-        return fenced.group(1).strip()
-    return text
+
+    # --- Step 2: find the anchor line ---
+    anchors = _ANCHOR_LINES.get(diagram_type, ())
+    lines = text.splitlines()
+    anchor_idx: int | None = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        for anchor in anchors:
+            # Case-insensitive prefix match so "graph td" == "graph TD"
+            if stripped.lower().startswith(anchor.lower()):
+                # Normalise the anchor line to the canonical casing
+                lines[i] = anchor + (stripped[len(anchor):] if len(stripped) > len(anchor) else "")
+                anchor_idx = i
+                break
+        if anchor_idx is not None:
+            break
+
+    if anchor_idx is None:
+        logger.debug(
+            "diagram_renderer._sanitize_mermaid: no anchor found for %r in %r",
+            diagram_type,
+            text[:200],
+        )
+        return ""
+
+    # --- Step 3: return from anchor line onward ---
+    result = "\n".join(lines[anchor_idx:]).rstrip()
+    return result
 
 
 def _is_valid_mermaid(diagram_type: str, code: str) -> bool:
@@ -110,9 +182,10 @@ def _generate_mermaid_code(
     llm_invoke_func: Callable[[str], str],
 ) -> str:
     """
-    Calls Gemini with a type-specific prompt and returns raw Mermaid code.
+    Calls the LLM with a type-specific prompt and returns sanitized Mermaid code.
 
-    Strips markdown fences from the response. Returns empty string on failure.
+    Uses _sanitize_mermaid to strip fences and discard any LLM preamble/explanation.
+    Returns empty string on failure or when no valid anchor is found.
     """
     prompt_template = _PROMPTS.get(diagram_type)
     if not prompt_template:
@@ -125,11 +198,12 @@ def _generate_mermaid_code(
 
     try:
         raw = llm_invoke_func(prompt)
-        code = _strip_mermaid_fences(str(raw or ""))
+        code = _sanitize_mermaid(diagram_type, str(raw or ""))
         logger.debug(
-            "diagram_renderer: LLM returned %d chars for diagram_type=%r",
+            "diagram_renderer: sanitized %d chars for diagram_type=%r — preview: %r",
             len(code),
             diagram_type,
+            code[:300],
         )
         return code
     except Exception as exc:  # noqa: BLE001
