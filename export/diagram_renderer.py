@@ -33,7 +33,13 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_DIAGRAMS_DIR = Path("data") / "diagrams"
+DIAGRAM_OUTPUT_DIR = Path("data") / "diagrams"
+
+DIAGRAM_PATHS: dict[str, str] = {
+    "context": str(DIAGRAM_OUTPUT_DIR / "diagram_context.png"),
+    "class":   str(DIAGRAM_OUTPUT_DIR / "diagram_class.png"),
+    "er":      str(DIAGRAM_OUTPUT_DIR / "diagram_er.png"),
+}
 
 _DIAGRAM_TYPES = ("context", "class", "er")
 
@@ -349,7 +355,7 @@ def generate_diagram(
         return None
 
     # Step 3 — Render to PNG
-    output_path = _DIAGRAMS_DIR / f"{diagram_type}_diagram.png"
+    output_path = Path(DIAGRAM_PATHS[diagram_type])
     success = _render_mermaid_to_png(mermaid_code, output_path)
 
     if not success:
@@ -381,7 +387,7 @@ def generate_all_diagrams(
         Mapping of diagram_type → absolute PNG path for each successfully rendered diagram.
         Types that failed are omitted from the dict.
     """
-    _DIAGRAMS_DIR.mkdir(parents=True, exist_ok=True)
+    DIAGRAM_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     results: dict[str, str] = {}
 
     for diagram_type in _DIAGRAM_TYPES:

@@ -1,7 +1,7 @@
 import logging, os
 from pathlib import Path
 from dotenv import load_dotenv
-from langchain_groq import ChatGroq
+from langchain_google_genai import ChatGoogleGenerativeAI
 from export.diagram_renderer import generate_all_diagrams
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -16,7 +16,11 @@ Stack: Python, LangChain, ChromaDB, Google Gemini, python-docx, Streamlit.
 """
 
 def _invoke(prompt: str) -> str:
-    llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY", ""), temperature=0.2)
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.0-flash-lite",
+        google_api_key=os.getenv("GOOGLE_API_KEY"),
+        temperature=0.2,
+    )
     return llm.invoke(prompt).content
 
 if __name__ == "__main__":
