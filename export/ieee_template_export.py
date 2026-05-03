@@ -520,7 +520,6 @@ def peel_manuscript_title(md: str) -> Tuple[Optional[str], str]:
     rest = "\n".join(lines[i0:]).strip()
     return title, rest
 
-
 def write_markdown_with_ieee_styles(
     doc: DocumentObject,
     md: str,
@@ -802,6 +801,12 @@ def write_markdown_with_ieee_styles(
             p = doc.add_paragraph(style=body_style)
             r = p.add_run(m.group(1))
             r.bold = True
+            continue
+
+        # Skip plain-text lines that duplicate the current section heading
+        _stripped_norm = re.sub(r'[^\w\s]', '', stripped.lower())
+        _stripped_norm = re.sub(r'\s+', ' ', _stripped_norm).strip()
+        if last_h1_text and _stripped_norm == last_h1_text:
             continue
 
         p = doc.add_paragraph(line, style=body_style)

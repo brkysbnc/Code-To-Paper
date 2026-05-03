@@ -69,9 +69,10 @@ CRITICAL RULES:
         from CONTEXT (e.g. parent-child chunking in Chroma, multi-query
         retrieval, faithfulness judge). Cite [1] for implementation.
         Do NOT claim features not in CONTEXT.
-     OPTIONAL TABLE: Add a comparison table ONLY if 2+ cited works
-     exist AND you can fill at least 3 rows with real data from
-     USER_LITERATURE_APPROVED and CONTEXT. Otherwise omit entirely.
+     OPTIONAL TABLE: You MAY add a comparison table, but ONLY under ALL of the following conditions:
+     1. There are 2 or more cited works in USER_LITERATURE_APPROVED.
+     2. You can fill at least 3 rows with real data directly from USER_LITERATURE_APPROVED and CONTEXT — no invented data.
+     3. CRITICAL — ATOMIC RULE: You must decide whether to include the table BEFORE writing any ### subheading. If you are not certain you can satisfy conditions 1 and 2, do NOT write the ### subheading at all. Writing a ### subheading and then omitting the table is strictly forbidden. The subheading and the table are a single unit: either both appear or neither appears.
      NO Mermaid diagram in Literature Review.
      ABSOLUTE PROHIBITION: Do NOT write any ### subheading whose
      text matches or closely resembles the section title
