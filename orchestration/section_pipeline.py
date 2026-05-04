@@ -585,6 +585,23 @@ def run_paper_pipeline(
             diagram_selections=diagram_selections,
         )
 
+        # "all" modunda diyagramları üret ve kaydet
+        if diagram_mode == "all" and diagram_selections:
+            try:
+                from export.diagram_renderer import generate_all_diagrams
+                logger.info("Diyagramlar üretiliyor: %s", diagram_selections)
+                # Ensure repo_context_for_planner is available; fallback to URL if not
+                ctx = locals().get("repo_context_for_planner") or f"Repository URL: {repo_url}"
+                diagram_paths = generate_all_diagrams(
+                    repo_context=ctx,
+                    llm_invoke_func=_safe_invoke,
+                )
+                out["diagram_paths"] = diagram_paths
+                logger.info("Diyagramlar kaydedildi: %s", diagram_paths)
+            except Exception as _dex:
+                logger.warning("Diyagram üretimi başarısız (soft): %s", _dex)
+                out["diagram_paths"] = {}
+
     except Exception as e:  # noqa: BLE001
         logger.error("Paper pipeline hata (adim=%s): %s", step, e)
         out["error"] = str(e)

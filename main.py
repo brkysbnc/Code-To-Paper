@@ -779,6 +779,27 @@ def _render_agent_preview_panel() -> None:
                     if _sb_trace:
                         with st.expander("TRACEABILITY (iç kontrol)", expanded=False):
                             st.markdown(_sb_trace)
+
+            # Diyagramları göster
+            diagram_paths = paper_result.get("diagram_paths", {})
+            if diagram_paths:
+                st.markdown("---")
+                st.subheader("📊 Üretilen Diyagramlar")
+                cols = st.columns(len(diagram_paths))
+                for col, (diag_type, path) in zip(cols, diagram_paths.items()):
+                    with col:
+                        if Path(path).exists():
+                            st.image(path, caption=diag_type.capitalize())
+                            with open(path, "rb") as f:
+                                st.download_button(
+                                    label=f"⬇️ {diag_type.capitalize()} İndir",
+                                    data=f,
+                                    file_name=f"{diag_type}_diagram.png",
+                                    mime="image/png",
+                                    key=f"dl_{diag_type}",
+                                    use_container_width=True,
+                                )
+
             combined = str(paper_result.get("combined_markdown") or "").strip()
             if combined:
                 st.session_state["full_paper_combined_md"] = combined
