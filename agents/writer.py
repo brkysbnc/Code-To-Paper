@@ -37,16 +37,15 @@ CRITICAL RULES:
 2. CITATION (BODY — STRICT): In the reader-facing BODY prose you must NOT include filenames, paths, line numbers, backticks around paths, or patterns like file:, lines:, (path:start-end). The ONLY inline citation markers in the BODY are numeric: [1], [2], …
 3. Citation meaning: [1] = the GitHub repository as a whole (implementation), when a repository URL is provided below. Numbers [2], [3], … refer ONLY to sources explicitly labeled [2], [3], … inside USER_LITERATURE_APPROVED when that block is not "(none)". Do not use [2] for individual repository files from CONTEXT; those remain cited collectively as [1] where appropriate.
 
-CRITICAL — NO LITERATURE-TO-REPOSITORY TERMINOLOGY BLEED:
-- USER_LITERATURE_APPROVED summarizes OTHER people's systems (e.g. a cited thesis). Their worker names, datasets, and industrial domains belong ONLY to those cited sources ([2], …). Never imply they are names of components inside [1].
-- When describing what THIS repository ([1]) implements, use ONLY vocabulary evidenced in CONTEXT: real file paths, Python module/agent class names, README phrases, and architecture words that literally appear there. Do NOT rename [1]'s pipeline using cool labels copied from literature unless CONTEXT contains those exact strings.
-- Forbidden as labels for [1] unless they literally appear in CONTEXT (as identifiers or quoted docs): phrases such as "Document Reader", "Map Extractor", "Section Writer", "Report Assembler", "Abstract Generator Node", "Header Generator Node", "Update Vector Database Node", "Acronym Extractor Node" — these often appear in cited multi-agent report papers but are NOT generic IEEE terms; they are thesis-specific roles.
-- Prefer CONTEXT-grounded wording instead, for example: GitHub ingestion / clone step, indexer or parent-child chunks in Chroma, planner-generated retrieval queries, AcademicWriter / MetadataWriter agents, faithfulness judge / verification step, Streamlit UI, LangChain stack, Gemini models — only where CONTEXT supports each phrase.
-- Literature Review paragraph (EXISTING WORK) may use the cited sources' own terminology WITH attribution ([2], …). Paragraphs THE GAP and OUR CONTRIBUTION still follow CRITICAL RULES 1–3: OUR CONTRIBUTION must describe [1] strictly from CONTEXT without borrowing foreign worker-node branding.
+SOURCE SEPARATION — REPOSITORY [1] VS CITED LITERATURE [2]+ (no keyword lists; applies to ANY repo and ANY uploaded papers):
+- CONTEXT is the ONLY evidence base for WHAT [1] IS AND DOES: modules, pipelines, services, frameworks named in code/docs, dependencies, APIs, databases, UI layers, deployment hints, stated goals, evaluation hooks—anything asserted as fact about THIS repository must be supported by CONTEXT (paraphrase allowed; invented components forbidden).
+- USER_LITERATURE_APPROVED is the ONLY evidence base for WHAT EXTERNAL SOURCES SAY about THEIR OWN work when cited as [2], [3], … Never merge their proprietary labeling into [1].
+- NEVER transplant vocabulary from USER_LITERATURE_APPROVED (subsystem titles, coined agent/job names, dataset or product names, application-domain vignettes from cited PDFs) into sentences that describe [1]'s architecture or behavior—unless that EXACT wording also appears inside CONTEXT as part of THIS repo's docs/code (then it is CONTEXT-grounded, not literature-imported).
+- Contrasts are allowed ONLY when attribution is explicit: attribute foreign claims with [n]; describe [1] with CONTEXT-backed facts in the same sentence or adjacent sentences. Do not silently reuse another paper's component nouns as names for [1]'s pieces.
+- Literature Review — EXISTING WORK: use each cited source's own terms WITH [n]. THE GAP: grounded in USER_LITERATURE_APPROVED only. OUR CONTRIBUTION: describe how [1] fills the gap using CONTEXT-derived naming ONLY for [1]'s mechanisms.
 
-DOMAIN LOCK (Introduction, Methodology, System Architecture and Implementation, Conclusion — NOT for Literature Review EXISTING WORK):
-- Do NOT frame [1] as truck testing, Volvo fleets, expedition logbooks, field Engineering Reports from vehicles, or similar domains unless CONTEXT explicitly discusses those domains for this repository.
-- Default framing for Code-To-Paper–style repos: automation of IEEE/academic-style manuscript preparation from GitHub source plus optional literature grounding (RAG, LLM orchestration, verification).
+APPLICATION DOMAIN FOR [1] (Introduction, Methodology, System Architecture and Implementation, Conclusion — NOT Literature Review EXISTING WORK):
+- Problem domain, users, setting, data modality, and industry scenario for [1] MUST be inferred ONLY from CONTEXT (README, configs, identifiers, comments). Do NOT adopt application-domain framing from USER_LITERATURE_APPROVED when describing [1], unless CONTEXT explicitly ties [1] to that domain.
 
 4. STRUCTURE: Write flowing academic prose. Use ### subheadings ONLY
    when the content genuinely requires subdivision into distinct topics.
@@ -59,9 +58,8 @@ DOMAIN LOCK (Introduction, Methodology, System Architecture and Implementation, 
      are the most accurate description of what CONTEXT contains.
    - Do NOT add a subheading just to create structure. If the content
      flows naturally as continuous prose, write it that way.
-   - Subheadings must be specific to this project's actual components
-     (e.g. "Parent-Child Indexing Strategy", "Adaptive Retrieval
-     Threshold", "Rate-Limited Embedding Pipeline").
+   - Subheadings must describe specifics evidenced in CONTEXT for THIS repo
+     (avoid recycled titles from unrelated papers).
    Exception — Introduction and Conclusion: write as flowing prose,
    no ### subheadings at all, no Mermaid diagram.
    Exception — when Section Title is exactly 'Literature Review'
@@ -78,8 +76,8 @@ DOMAIN LOCK (Introduction, Methodology, System Architecture and Implementation, 
         GitHub source code repositories').
      3) OUR CONTRIBUTION: Explain how the analyzed repository [1]
         addresses the gap. Connect to specific implementation details
-        from CONTEXT (e.g. parent-child chunking in Chroma, multi-query
-        retrieval, faithfulness judge). Cite [1] for implementation.
+        from CONTEXT only (cite mechanisms visible in retrieved chunks).
+        Cite [1] for implementation.
         Do NOT claim features not in CONTEXT.
      OPTIONAL TABLE: You MAY add a comparison table, but ONLY under ALL of the following conditions:
      1. There are 2 or more cited works in USER_LITERATURE_APPROVED.

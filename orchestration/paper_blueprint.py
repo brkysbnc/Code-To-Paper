@@ -162,30 +162,26 @@ DEFAULT_PAPER_SECTIONS: list[tuple[str, str]] = [
         "they leave uncovered, then explain how the analyzed repository "
         "fills that gap using only evidence from CONTEXT and "
         "USER_LITERATURE_APPROVED. Do not invent claims. "
-        "In OUR CONTRIBUTION prose, describe [1] using CONTEXT terminology only — "
-        "do not reuse cited papers' worker-node names as labels for this repository unless CONTEXT contains them verbatim. "
+        "In OUR CONTRIBUTION prose, name [1]'s mechanisms ONLY from CONTEXT; "
+        "do not reuse cited papers' subsystem or agent naming schemes for [1] unless those strings literally appear in CONTEXT. "
         "Write as flowing prose with NO subheadings.",
     ),
     (
         "Methodology",
-        "Describe the research methodology and system design approach. "
-        "Explain how the repository addresses the problem: the overall pipeline strategy, "
-        "the parent-child chunking approach for document indexing, "
-        "the planner-driven multi-query retrieval mechanism, "
-        "and the faithfulness validation process. "
-        "Focus on the WHY and HOW of design decisions, not the implementation details. "
-        "Name pipeline stages ONLY with CONTEXT-evidenced terms; do not borrow worker-node titles from USER_LITERATURE_APPROVED for [1]. "
+        "Describe the methodology and design rationale that CONTEXT supports for THIS repository "
+        "(e.g. indexing or retrieval choices, orchestration, verification, generation workflow—ONLY topics evidenced in CONTEXT). "
+        "Focus on WHY/HOW where CONTEXT explains intent or structure; omit topics absent from CONTEXT. "
+        "Every named stage or architectural element attributed to [1] must be CONTEXT-derived; "
+        "never lift subsystem labels from user-supplied literature onto [1]. "
         "Ground all claims strictly in repository evidence.",
     ),
     (
         "System Architecture and Implementation",
-        "Detail the full technical architecture and implementation. "
-        "Explain repository ingestion, hierarchical indexing with ChromaDB, "
-        "planner-driven multi-query retrieval, the academic writer stage, "
-        "and the faithfulness judge component. "
-        "Describe the technical stack: Python, Gemini models, LangChain, Streamlit. "
-        "Do not describe [1] using another paper's bespoke agent labels unless those strings appear in CONTEXT. "
-        "Map all claims strictly to repository evidence.",
+        "Detail architecture and implementation strictly from CONTEXT: components, modules, "
+        "data layers, external services, languages and frameworks mentioned in THIS repo. "
+        "Do not assume a fixed stack (any DB, LLM, UI, or agent framework)—only report what CONTEXT evidences. "
+        "Never describe [1] using naming borrowed from uploaded literature unless CONTEXT contains those strings. "
+        "Map every substantive claim to repository evidence.",
     ),
     (
         "Conclusion",
@@ -196,9 +192,9 @@ DEFAULT_PAPER_SECTIONS: list[tuple[str, str]] = [
         "(c) Limitations of the current system grounded in repository evidence "
         "(e.g. reliance on external LLM APIs, retrieval bounds, free-tier constraints). "
         "(d) Future work directions supported by the codebase. "
-        "DOMAIN: Summarize ONLY what [1] actually does per CONTEXT — typically GitHub-to-IEEE/RAG documentation automation. "
-        "Do NOT drift into cited literature's application domain (e.g. truck testing, fleet logbooks, Volvo-specific workflows) "
-        "unless CONTEXT proves this repository targets that domain. "
+        "DOMAIN: Summarize ONLY scope and outcomes that CONTEXT establishes for [1]. "
+        "Do NOT adopt scenarios, industries, datasets, or evaluation claims from uploaded literature "
+        "unless CONTEXT explicitly ties [1] to them. "
         "Do NOT write a separate Limitations section — integrate everything here. "
         "Total length: 3-4 paragraphs.",
     ),
