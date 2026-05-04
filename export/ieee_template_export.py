@@ -135,6 +135,45 @@ def _line_starts_mermaid(stripped: str) -> bool:
     return any(stripped.startswith(k) for k in _MERMAID_KEYWORDS)
 
 
+# Writer artik Mermaid uretmemeli; kalinti satirlari Word'e dusmesin (PNG diyagram ayri).
+_MERMAID_BRACKET_EDGE_RE = re.compile(r"[A-Za-z0-9_]+\s*\[[^\]]*\]\s*-+[\>]?")
+
+
+def _is_mermaid_syntax_line(stripped: str) -> bool:
+    """Fence olmadan kalan Mermaid kenar/node satirlari (or. A[x] --> B[y])."""
+    if not stripped:
+        return False
+    s = stripped.strip()
+    if s.lower().startswith("```mermaid"):
+        return True
+    if _line_starts_mermaid(s):
+        return True
+    if _MERMAID_BRACKET_EDGE_RE.search(s):
+        return True
+    # Minimal kenar: NodeA --> NodeB (koseli etiket yok)
+    if re.search(r"\b[A-Za-z0-9_]+\s*-->\s*[A-Za-z0-9_]+\b", s):
+        return True
+    if re.match(r"^(subgraph\s|end\s*$|direction\s+[A-Z]{2})", s, re.IGNORECASE):
+        return True
+    return False
+
+
+def _is_mermaid_or_edge_code_blob(blob: str) -> bool:
+    """Acik kod blogunda Mermaid veya akis kenarlari varsa True (Word'e basilmaz)."""
+    t = (blob or "").strip()
+    if not t:
+        return False
+    lines = t.splitlines()
+    meaningful = [ln.strip() for ln in lines if ln.strip()]
+    first = meaningful[0] if meaningful else ""
+    if _line_starts_mermaid(first):
+        return True
+    if first.lower().startswith("```mermaid"):
+        return True
+    hits = sum(1 for ln in meaningful if _is_mermaid_syntax_line(ln))
+    return hits >= max(1, len(meaningful) // 2) or (len(meaningful) <= 4 and hits > 0)
+
+
 def _w_paragraph_style_id(p_el) -> str:
     """w:p elementinin w:pStyle/w:val degerini kucuk harfle dondurur; yoksa bos string."""
     if p_el is None:
@@ -629,8 +668,13 @@ def write_markdown_with_ieee_styles(
     def flush_code() -> None:
         if not code_lines:
             return
+        blob = "\n".join(code_lines)
+        # Writer'dan gelen Mermaid kalintisi ``` kod blogunda bile Word'e yazma.
+        if _is_mermaid_or_edge_code_blob(blob):
+            code_lines.clear()
+            return
         p = doc.add_paragraph(style=body_style)
-        _mono_runs(p, "\n".join(code_lines))
+        _mono_runs(p, blob)
         p.paragraph_format.left_indent = Pt(12)
         p.paragraph_format.space_after = Pt(6)
         code_lines.clear()
@@ -823,6 +867,9 @@ def write_markdown_with_ieee_styles(
         _stripped_norm = re.sub(r'[^\w\s]', '', stripped.lower())
         _stripped_norm = re.sub(r'\s+', ' ', _stripped_norm).strip()
         if last_h1_text and _stripped_norm == last_h1_text:
+            continue
+
+        if _is_mermaid_syntax_line(stripped):
             continue
 
         p = doc.add_paragraph(line, style=body_style)

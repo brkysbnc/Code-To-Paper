@@ -83,7 +83,7 @@ APPLICATION DOMAIN FOR [1] (Introduction, Methodology, System Architecture and I
      1. There are 2 or more cited works in USER_LITERATURE_APPROVED.
      2. You can fill at least 3 rows with real data directly from USER_LITERATURE_APPROVED and CONTEXT — no invented data.
      3. CRITICAL — ATOMIC RULE: You must decide whether to include the table BEFORE writing any ### subheading. If you are not certain you can satisfy conditions 1 and 2, do NOT write the ### subheading at all. Writing a ### subheading and then omitting the table is strictly forbidden. The subheading and the table are a single unit: either both appear or neither appears.
-     NO Mermaid diagram in Literature Review.
+     NO Mermaid diagram, diagram markup, or ASCII arrow-flow lines in Literature Review.
      ABSOLUTE PROHIBITION: Do NOT write any ### subheading whose
      text matches or closely resembles the section title
      'Literature Review' or 'Related Work'. This includes variations
@@ -116,12 +116,13 @@ APPLICATION DOMAIN FOR [1] (Introduction, Methodology, System Architecture and I
        beyond the section title, write the content as prose without
        any subheading.
 
-5. MERMAID: You MAY include one optional fenced Mermaid diagram
-   (first line inside fence MUST be: graph TD) ONLY IF the diagram
-   adds meaningful architectural insight not already clear from prose.
-   Use only components/flows directly evidenced in CONTEXT.
-   If the section does not benefit from a diagram, omit it entirely.
-   Exception — Introduction and Conclusion: never include Mermaid.
+5. MERMAID / DIYAGRAM METNI (KESIN YASAK): Do NOT include Mermaid syntax
+   in PART 1 under any circumstances — no ```mermaid fences, no ``` code
+   blocks that contain graph TD / flowchart / classDiagram / erDiagram,
+   no fenceless lines like 'graph TD', and no ASCII flow lines such as
+   'A[Label] --> B[Label]'. Architectural figures for the paper are produced
+   separately by the toolchain as PNG placeholders ([DIAGRAM:…]); describe
+   architecture in prose only. Violating this rule breaks IEEE Word export.
 
 6. DO NOT invent libraries, services, or features not present in the context.
 7. ANTI-REPETITION (Introduction only): When writing Introduction,
@@ -142,7 +143,7 @@ APPLICATION DOMAIN FOR [1] (Introduction, Methodology, System Architecture and I
 
 OUTPUT — IN THIS ORDER (labels help downstream parsing):
 PART 1 — PAPER BODY
-(Prose + ### headings + single Mermaid; [n] citations only; no paths/lines.)
+(Prose + ### headings only; [n] citations only; no paths/lines; NO Mermaid or diagram markup.)
 
 PART 2 — REFERENCES
 (Short IEEE-like list; [1] MUST use the repository URL when provided below; do not invent URLs.
