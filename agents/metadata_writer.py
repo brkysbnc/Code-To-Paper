@@ -5,12 +5,8 @@ Akis (tek LLM cagrisi):
 1) MetadataWriter.generate combined_body (yazilmis bolumler) + rag_documents (ek repo kaniti) + repo_url alir.
 2) Body 18000, RAG context 12000 char ile kesilir; LLM'e str.replace ile enjekte edilir
    (str.format kullanilmaz — bolum metinlerindeki literal { } kod fence'lerini bozmamak icin).
-3) LLM yalnizca {"title", "abstract"} JSON dondurur; abstract 250 kelimede sertce kesilir.
-4) extract_keywords_from_abstract regex/akronim/bigram zincirini calistirip keywords ⊆ abstract
-   garantisini Python tarafinda saglar (LLM keyword uretmez).
-
-Free-tier: pipeline basina 1 LLM cagrisi (mevcut MetadataWriter ile ayni); +3 embedContent cagrisi
-abstract icin heuristic planner sorgulariyla cagri tarafinda yapilir (bu dosya disinda).
+3) LLM yalnizca {"title", "abstract", "keywords"} JSON dondurur; abstract 250 kelimede sertce kesilir.
+4) Keywords oncelikle LLM'den alinir, parse edilemezse regex fallback calisir.
 """
 
 from __future__ import annotations
@@ -32,7 +28,7 @@ You are given:
 - BODY: combined draft of the paper's body sections (already RAG-grounded).
 - CONTEXT: additional raw evidence retrieved directly from the repository.
 
-Produce TWO pieces of metadata in JSON format:
+Produce THREE pieces of metadata in JSON format:
 
 1) TITLE: A concise, descriptive academic title (8-15 words).
    - Reflect the paper's actual technical contribution.
@@ -51,6 +47,13 @@ Produce TWO pieces of metadata in JSON format:
    - Do NOT copy or paraphrase sentences from the Introduction section
      in BODY. The abstract must be independently written.
 
+3) KEYWORDS: A list of 4-6 IEEE-style keywords.
+   - Extract ONLY from the abstract text you just wrote.
+   - Do NOT invent terms not present in the abstract.
+   - Prefer acronyms over full forms when both appear (e.g. "RAG" not "Retrieval-Augmented Generation").
+   - Use standard IEEE keyword format: Title Case for multi-word terms, uppercase for acronyms.
+   - Do NOT include generic words like "system", "paper", "approach", "method", "proposed".
+
 REPO URL:
 {repo_url}
 
@@ -65,7 +68,7 @@ BODY:
 ---
 
 OUTPUT FORMAT — return EXACTLY a JSON object with this shape, nothing before or after:
-{"title": "<string>", "abstract": "<string>"}
+{"title": "<string>", "abstract": "<string>", "keywords": ["<string>", ...]}
 """
 
 
@@ -296,6 +299,18 @@ class MetadataWriter:
         title = str(data.get("title") or "").strip()
         abstract_raw = str(data.get("abstract") or "").strip()
         abstract = MetadataWriter._enforce_word_cap(abstract_raw, 250)
+        
+        # Keywords: önce LLM'den oku, fallback olarak regex tabanlı extraction kullan
+        keywords_raw = data.get("keywords") or []
+        if isinstance(keywords_raw, list) and keywords_raw:
+            # LLM liste döndürdü, temizle, deduplicate et ve birleştir
+            kw_list = [str(k).strip() for k in keywords_raw if str(k).strip()]
+            kw_list = deduplicate_keywords(kw_list)
+            keywords = ", ".join(kw_list[:6])
+        else:
+            # Fallback: regex tabanlı extraction
+            keywords = extract_keywords_from_abstract(abstract)
+
         if not MetadataWriter._check_minimum_words(abstract, 150):
             logger.warning(
                 "Abstract minimum kelime sayısını karşılamıyor: %d kelime (min 150). "
@@ -305,7 +320,7 @@ class MetadataWriter:
         return {
             "title": title,
             "abstract": abstract,
-            "keywords": extract_keywords_from_abstract(abstract),
+            "keywords": keywords,
         }
 
     @staticmethod
