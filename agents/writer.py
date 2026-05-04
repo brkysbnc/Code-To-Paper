@@ -36,6 +36,18 @@ CRITICAL RULES:
 1. NO HALLUCINATION: Base repository implementation claims ONLY on CONTEXT. For claims grounded strictly in USER_LITERATURE_APPROVED, you may use only what appears there. If neither source supports a claim, write exactly: [Insufficient evidence] for that part (or the whole section if appropriate).
 2. CITATION (BODY — STRICT): In the reader-facing BODY prose you must NOT include filenames, paths, line numbers, backticks around paths, or patterns like file:, lines:, (path:start-end). The ONLY inline citation markers in the BODY are numeric: [1], [2], …
 3. Citation meaning: [1] = the GitHub repository as a whole (implementation), when a repository URL is provided below. Numbers [2], [3], … refer ONLY to sources explicitly labeled [2], [3], … inside USER_LITERATURE_APPROVED when that block is not "(none)". Do not use [2] for individual repository files from CONTEXT; those remain cited collectively as [1] where appropriate.
+
+CRITICAL — NO LITERATURE-TO-REPOSITORY TERMINOLOGY BLEED:
+- USER_LITERATURE_APPROVED summarizes OTHER people's systems (e.g. a cited thesis). Their worker names, datasets, and industrial domains belong ONLY to those cited sources ([2], …). Never imply they are names of components inside [1].
+- When describing what THIS repository ([1]) implements, use ONLY vocabulary evidenced in CONTEXT: real file paths, Python module/agent class names, README phrases, and architecture words that literally appear there. Do NOT rename [1]'s pipeline using cool labels copied from literature unless CONTEXT contains those exact strings.
+- Forbidden as labels for [1] unless they literally appear in CONTEXT (as identifiers or quoted docs): phrases such as "Document Reader", "Map Extractor", "Section Writer", "Report Assembler", "Abstract Generator Node", "Header Generator Node", "Update Vector Database Node", "Acronym Extractor Node" — these often appear in cited multi-agent report papers but are NOT generic IEEE terms; they are thesis-specific roles.
+- Prefer CONTEXT-grounded wording instead, for example: GitHub ingestion / clone step, indexer or parent-child chunks in Chroma, planner-generated retrieval queries, AcademicWriter / MetadataWriter agents, faithfulness judge / verification step, Streamlit UI, LangChain stack, Gemini models — only where CONTEXT supports each phrase.
+- Literature Review paragraph (EXISTING WORK) may use the cited sources' own terminology WITH attribution ([2], …). Paragraphs THE GAP and OUR CONTRIBUTION still follow CRITICAL RULES 1–3: OUR CONTRIBUTION must describe [1] strictly from CONTEXT without borrowing foreign worker-node branding.
+
+DOMAIN LOCK (Introduction, Methodology, System Architecture and Implementation, Conclusion — NOT for Literature Review EXISTING WORK):
+- Do NOT frame [1] as truck testing, Volvo fleets, expedition logbooks, field Engineering Reports from vehicles, or similar domains unless CONTEXT explicitly discusses those domains for this repository.
+- Default framing for Code-To-Paper–style repos: automation of IEEE/academic-style manuscript preparation from GitHub source plus optional literature grounding (RAG, LLM orchestration, verification).
+
 4. STRUCTURE: Write flowing academic prose. Use ### subheadings ONLY
    when the content genuinely requires subdivision into distinct topics.
    You are NOT required to use any fixed subheading names.
@@ -123,8 +135,12 @@ CRITICAL RULES:
      (e.g. a specific gap, a specific pain point visible in the code).
    - The Introduction must cover motivation, scope, and structure
      of the paper — NOT repeat what an abstract would say.
-   - Minimum 2 paragraphs. Second paragraph must describe what the
-     reader will find in each section of the paper (roadmap).
+   - Follow Section Goal paragraph structure when provided (typically four blocks:
+     problem; background/motivation; explicit contributions sentence starting with
+     'The contributions of this paper are:'; final roadmap paragraph).
+   - Put the section-by-section roadmap ONLY in that final roadmap paragraph,
+     listing ONLY sections that exist in this manuscript (per Section Goal).
+     Do NOT place the full roadmap in the second paragraph.
 
 OUTPUT — IN THIS ORDER (labels help downstream parsing):
 PART 1 — PAPER BODY

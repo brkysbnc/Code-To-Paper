@@ -135,7 +135,7 @@ DEFAULT_COMBINED_KEYWORDS_PLACEHOLDER = (
 
 DEFAULT_PAPER_SECTIONS: list[tuple[str, str]] = [
     (
-        "Introduction and motivation",
+        "Introduction and Motivation",
         "Write a multi-paragraph Introduction of at least 350 words. "
         "Do NOT use generic academic openings like 'The rapid evolution of...' or "
         "'In recent years...'. Structure as follows: "
@@ -147,7 +147,11 @@ DEFAULT_PAPER_SECTIONS: list[tuple[str, str]] = [
         "the phrase 'The contributions of this paper are:' and list 2-3 "
         "specific technical contributions visible in the repository. "
         "(d) Final paragraph: paper structure roadmap — what the reader will "
-        "find in each section. "
+        "find in each section. Name ONLY sections that actually exist in this manuscript: "
+        "Introduction and Motivation; Literature Review (only if user-supplied literature was used); "
+        "Methodology; System Architecture and Implementation; Conclusion. "
+        "Do NOT promise a separate Evaluation, Results, or Experiments section unless CONTEXT "
+        "documents comparable empirical evaluation for this repository. "
         "The Introduction must NOT summarize the paper like an abstract. "
         "Total length must be longer than the abstract.",
     ),
@@ -157,17 +161,46 @@ DEFAULT_PAPER_SECTIONS: list[tuple[str, str]] = [
         "cited work addresses and achieves, identify the specific gap "
         "they leave uncovered, then explain how the analyzed repository "
         "fills that gap using only evidence from CONTEXT and "
-        "USER_LITERATURE_APPROVED. Do not invent claims.",
+        "USER_LITERATURE_APPROVED. Do not invent claims. "
+        "In OUR CONTRIBUTION prose, describe [1] using CONTEXT terminology only — "
+        "do not reuse cited papers' worker-node names as labels for this repository unless CONTEXT contains them verbatim. "
+        "Write as flowing prose with NO subheadings.",
     ),
     (
-        "System architecture and implementation",
-        "Explain repository ingestion, hierarchical indexing, planner-driven multi-query retrieval, "
-        "and the academic writer stage; map claims strictly to repository evidence.",
+        "Methodology",
+        "Describe the research methodology and system design approach. "
+        "Explain how the repository addresses the problem: the overall pipeline strategy, "
+        "the parent-child chunking approach for document indexing, "
+        "the planner-driven multi-query retrieval mechanism, "
+        "and the faithfulness validation process. "
+        "Focus on the WHY and HOW of design decisions, not the implementation details. "
+        "Name pipeline stages ONLY with CONTEXT-evidenced terms; do not borrow worker-node titles from USER_LITERATURE_APPROVED for [1]. "
+        "Ground all claims strictly in repository evidence.",
     ),
     (
-        "Limitations and future work",
-        "Summarize evidenced constraints (e.g., reliance on external LLM APIs, retrieval bounds); "
-        "do not invent a roadmap not supported by the codebase.",
+        "System Architecture and Implementation",
+        "Detail the full technical architecture and implementation. "
+        "Explain repository ingestion, hierarchical indexing with ChromaDB, "
+        "planner-driven multi-query retrieval, the academic writer stage, "
+        "and the faithfulness judge component. "
+        "Describe the technical stack: Python, Gemini models, LangChain, Streamlit. "
+        "Do not describe [1] using another paper's bespoke agent labels unless those strings appear in CONTEXT. "
+        "Map all claims strictly to repository evidence.",
+    ),
+    (
+        "Conclusion",
+        "Write a concluding section as flowing prose with NO subheadings. "
+        "Structure as follows: "
+        "(a) Brief summary of the main contributions of the system. "
+        "(b) Key strengths observed from the implementation evidence. "
+        "(c) Limitations of the current system grounded in repository evidence "
+        "(e.g. reliance on external LLM APIs, retrieval bounds, free-tier constraints). "
+        "(d) Future work directions supported by the codebase. "
+        "DOMAIN: Summarize ONLY what [1] actually does per CONTEXT — typically GitHub-to-IEEE/RAG documentation automation. "
+        "Do NOT drift into cited literature's application domain (e.g. truck testing, fleet logbooks, Volvo-specific workflows) "
+        "unless CONTEXT proves this repository targets that domain. "
+        "Do NOT write a separate Limitations section — integrate everything here. "
+        "Total length: 3-4 paragraphs.",
     ),
 ]
 
