@@ -597,6 +597,29 @@ def _render_agent_preview_panel() -> None:
             + " · ".join(t for t, _ in DEFAULT_PAPER_SECTIONS)
             + " — her bolum icin planner + retrieval + writer calisir."
         )
+        st.markdown("**Diyagram seçeneği**")
+        diagram_mode_ui = st.radio(
+            "Diyagram modu",
+            options=("LLM'e bırak", "Manuel seç", "Hepsini çiz"),
+            horizontal=True,
+            key="diagram_mode_radio",
+            help="LLM'e bırak: repo analiz edilerek hangi diyagramların gerekli olduğuna karar verilir.",
+        )
+        _manual_diagram_selection: list[str] = []
+        if diagram_mode_ui == "Manuel seç":
+            _manual_cols = st.columns(3)
+            if _manual_cols[0].checkbox("Context Diagram", key="diag_context"):
+                _manual_diagram_selection.append("context")
+            if _manual_cols[1].checkbox("Class Diagram", key="diag_class"):
+                _manual_diagram_selection.append("class")
+            if _manual_cols[2].checkbox("ER Diagram", key="diag_er"):
+                _manual_diagram_selection.append("er")
+        _diagram_mode_map = {
+            "LLM'e bırak": "llm",
+            "Manuel seç": "manual",
+            "Hepsini çiz": "all",
+        }
+        _diagram_mode_val = _diagram_mode_map[diagram_mode_ui]
 
     st.caption(
         "Benzerlik: Sonuc cok azsa esigi dusurun (or. 0.15). Cok gurultu varsa yukseltin (or. 0.45)."
@@ -674,6 +697,8 @@ def _render_agent_preview_panel() -> None:
                         writer_extra_rules=_extra_rules,
                         user_literature_block=_lit_block,
                         existing_retriever=st.session_state.get("rag_retriever"),
+                        diagram_mode=_diagram_mode_val,
+                        manual_diagram_selection=_manual_diagram_selection,
                     )
             except Exception as exc:  # noqa: BLE001
                 if "GOOGLE_API_KEY" in str(exc):

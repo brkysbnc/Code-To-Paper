@@ -20,6 +20,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from agents.metadata_writer import MetadataWriter, extract_keywords_from_abstract
 from agents.writer import AcademicWriter
+from agents.diagram_planner import plan_diagrams
 from orchestration.paper_blueprint import DEFAULT_PAPER_SECTIONS, combine_paper_markdown
 from retriever import (
     build_rag_stack_for_repo,
@@ -294,6 +295,8 @@ def run_paper_pipeline(
     abstract_text: str = "",
     keywords_text: str = "",
     existing_retriever: Any | None = None,
+    diagram_mode: str = "none",
+    manual_diagram_selection: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Tek indeksleme sonrasi ardışık bolumler: her biri icin planner -> retrieval -> writer.
@@ -368,6 +371,42 @@ def run_paper_pipeline(
             return _invoke_gemini_chat_with_retry(llm, prompt_text)
 
         writer = AcademicWriter(llm_invoke_func=_safe_invoke)
+
+        step = "diagram_planning"
+        diagram_selections: list[str] = []
+        if diagram_mode != "none":
+            try:
+                # LLM modunda gerçek repo context'i çek
+                if diagram_mode == "llm":
+                    planner_docs, _ = _retrieve_parents_adaptive(
+                        retriever,
+                        planner_queries=[
+                            "system architecture main components",
+                            "data models database schema",
+                            "class structure object oriented",
+                        ],
+                        top_k_per_query=3,
+                        similarity_threshold=0.3,
+                    )
+                    repo_context_for_planner = "\n\n".join(
+                        d.page_content for d in planner_docs[:5]
+                    )[:6000]
+                else:
+                    # all/manual modda context gerekmez, plan_diagrams zaten LLM çağırmaz
+                    repo_context_for_planner = f"Repository URL: {repo_url}"
+
+                diagram_selections = plan_diagrams(
+                    repo_context=repo_context_for_planner,
+                    llm_invoke_func=_safe_invoke,
+                    mode=diagram_mode,
+                    manual_selection=manual_diagram_selection,
+                )
+                logger.info("DiagramPlanner selected: %s", diagram_selections)
+                out["diagram_selections"] = diagram_selections
+            except Exception as _dex:  # noqa: BLE001
+                logger.warning("DiagramPlanner failed (soft): %s", _dex)
+                diagram_selections = []
+
 
         for idx, (section_title, section_goal) in enumerate(use_sections):
             step = f"planner[{idx}]"
@@ -533,6 +572,8 @@ def run_paper_pipeline(
         out["abstract_text"] = combined_abstract
         out["keywords_text"] = combined_keywords
 
+        # Diagram planning moved up.
+
         step = "combine"
         out["combined_markdown"] = combine_paper_markdown(
             repo_url=repo_url,
@@ -541,6 +582,7 @@ def run_paper_pipeline(
             paper_title=combined_title,
             abstract_text=combined_abstract,
             keywords_text=combined_keywords,
+            diagram_selections=diagram_selections,
         )
 
     except Exception as e:  # noqa: BLE001

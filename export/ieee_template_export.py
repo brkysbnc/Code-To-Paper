@@ -520,6 +520,12 @@ def peel_manuscript_title(md: str) -> Tuple[Optional[str], str]:
     rest = "\n".join(lines[i0:]).strip()
     return title, rest
 
+_DIAGRAM_PLACEHOLDER_LABELS: dict[str, str] = {
+    "[DIAGRAM:context]": "[ Figure: Context Diagram — to be inserted here ]",
+    "[DIAGRAM:class]":   "[ Figure: Class Diagram — to be inserted here ]",
+    "[DIAGRAM:er]":      "[ Figure: Entity-Relationship Diagram — to be inserted here ]",
+}
+
 def write_markdown_with_ieee_styles(
     doc: DocumentObject,
     md: str,
@@ -698,6 +704,16 @@ def write_markdown_with_ieee_styles(
             table_buf.append(stripped)
             continue
         flush_table()
+
+        # Diagram placeholder detection
+        if stripped in _DIAGRAM_PLACEHOLDER_LABELS:
+            label = _DIAGRAM_PLACEHOLDER_LABELS[stripped]
+            p = doc.add_paragraph(style=body_style)
+            p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+            run = p.add_run(label)
+            run.bold = True
+            run.italic = True
+            continue
 
         if stripped in ("", "---"):
             doc.add_paragraph("", style=body_style)

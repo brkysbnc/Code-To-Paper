@@ -112,7 +112,7 @@ CRITICAL RULES:
    Use only components/flows directly evidenced in CONTEXT.
    If the section does not benefit from a diagram, omit it entirely.
    Exception — Introduction and Conclusion: never include Mermaid.
-   Exception — Literature Review / Related Work: never include Mermaid.
+
 6. DO NOT invent libraries, services, or features not present in the context.
 7. ANTI-REPETITION (Introduction only): When writing Introduction,
    you will NOT have access to the abstract text, but assume one exists.
@@ -227,6 +227,7 @@ CONTEXT:
                 tail = "\n".join(lines[i:]).strip()
                 return body, tail
         return raw.strip(), ""
+
 
     def generate_section(
         self,

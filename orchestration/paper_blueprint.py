@@ -180,6 +180,7 @@ def combine_paper_markdown(
     paper_title: str = "",
     abstract_text: str = "",
     keywords_text: str = "",
+    diagram_selections: list[str] | None = None,
 ) -> str:
     """
     Bolum Writer ciktilarini tek Markdown dosyasinda birlestirir; TRACEABILITY bloklarini sonda toplar.
@@ -211,6 +212,13 @@ def combine_paper_markdown(
         cleaned_body, section_refs = _extract_references_from_body(body)
         cleaned_body = _strip_traceability_tables(cleaned_body)
         cleaned_body = _strip_inline_references_section(cleaned_body)
+        
+        # Diyagram placeholder'larını deterministik ekle
+        heading_lower = section_heading.lower()
+        if any(k in heading_lower for k in ("system", "architecture", "implementation")):
+            for diag in (diagram_selections or []):
+                cleaned_body += f"\n\n[DIAGRAM:{diag}]"
+        
         all_refs.extend(section_refs)
         lines.append(f"## {section_heading}")
         lines.append("")
