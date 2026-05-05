@@ -401,9 +401,16 @@ def _render_sidebar() -> str:
     return target_dir
 
 
-def _build_docx_from_markdown(md: str) -> tuple[bytes, str]:
+def _build_docx_from_markdown(
+    md: str,
+    *,
+    context_diagram_path: str | Path | None = None,
+) -> tuple[bytes, str]:
     """
     IEEE Word sablonunun uzerine yazar; sablon yoksa veya hata olursa duz .docx uretir.
+
+    `context_diagram_path`: PNG yolu `[DIAGRAM:context]` satirinda gomulur; None ise oturumdaki
+    `paper_diagram_paths["context"]` (son tam makale calistirmasindan) dener.
 
     Sablon yolu: `ieee_template_path_input` oturumu, sonra IEEE_DOCX_TEMPLATE, sonra
     docs/templates/ConferenceTemplateIEEE.docx.
@@ -413,10 +420,16 @@ def _build_docx_from_markdown(md: str) -> tuple[bytes, str]:
     if path is not None and not path.is_file():
         path = None
     path = path or resolve_default_ieee_template()
+    ctx_png = context_diagram_path
+    if ctx_png is None:
+        _dp = st.session_state.get("paper_diagram_paths") or {}
+        ctx_png = _dp.get("context")
     if path is None:
         return markdown_to_docx_bytes(md), "IEEE sablonu bulunamadi; duz Word kullanildi."
     try:
-        return markdown_to_ieee_template_docx_bytes(path, md), f"IEEE sablonu kullanildi: {path}"
+        return markdown_to_ieee_template_docx_bytes(
+            path, md, context_diagram_path=ctx_png
+        ), f"IEEE sablonu kullanildi: {path}"
     except Exception as exc:  # noqa: BLE001
         return markdown_to_docx_bytes(md), f"Sablon acilamadi ({exc}); duz Word kullanildi."
 
@@ -780,8 +793,9 @@ def _render_agent_preview_panel() -> None:
                         with st.expander("TRACEABILITY (iç kontrol)", expanded=False):
                             st.markdown(_sb_trace)
 
-            # Diyagramları göster
+            # Diyagramları göster; Word disari aktarimunda context PNG yolu kullanilir
             diagram_paths = paper_result.get("diagram_paths", {})
+            st.session_state["paper_diagram_paths"] = dict(diagram_paths)
             if diagram_paths:
                 st.markdown("---")
                 st.subheader("📊 Üretilen Diyagramlar")
@@ -1098,7 +1112,12 @@ def _render_agent_preview_panel() -> None:
                 key="download_full_paper_md",
             )
         with c_full_w:
-            _docx_full, _docx_note_full = _build_docx_from_markdown(full_combined)
+            _ctx_path = (st.session_state.get("paper_diagram_paths") or {}).get(
+                "context"
+            )
+            _docx_full, _docx_note_full = _build_docx_from_markdown(
+                full_combined, context_diagram_path=_ctx_path
+            )
             st.caption(_docx_note_full)
             st.download_button(
                 "Tam makaleyi indir (.docx)",
@@ -1135,8 +1154,13 @@ def _render_agent_preview_panel() -> None:
                 key="download_section_md",
             )
         with c_sec_w:
-            # Word: yalnizca Writer govdesi; TRACEABILITY tablosu .md indirmede kalir, sablona dusmez.
-            _docx_sec, _docx_note_sec = _build_docx_from_markdown(draft)
+            # Writer taslagi: son tam makale calistirmsindan gelen context PNG yolu kullanilir
+            _ctx_path_sec = (
+                st.session_state.get("paper_diagram_paths") or {}
+            ).get("context")
+            _docx_sec, _docx_note_sec = _build_docx_from_markdown(
+                draft, context_diagram_path=_ctx_path_sec
+            )
             st.caption(_docx_note_sec)
             st.download_button(
                 "Taslagi indir (.docx)",

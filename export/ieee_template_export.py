@@ -26,7 +26,7 @@ from docx.document import Document as DocumentObject
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt
+from docx.shared import Inches, Pt
 
 from export.ooxml_strict_patch import patch_strict_ooxml_to_opc
 
@@ -572,6 +572,7 @@ def write_markdown_with_ieee_styles(
     paper_title_override: Optional[str] = None,
     col_break_sectpr=None,
     author_block: Optional[list] = None,
+    context_diagram_path: str | Path | None = None,
 ) -> None:
     """
     Temizlenmis sablon uzerine Markdown yazar: paper title, author block, Abstract/Keywords, Bolumler.
@@ -581,6 +582,10 @@ def write_markdown_with_ieee_styles(
       break -> Abstract -> Keywords -> ... (col_break_sectpr yok sayilir).
 
     author_block None ise LEGACY akis: title append + col_break_sectpr Keywords/Heading onunde inject.
+
+    `[DIAGRAM:context]` satirinda `context_diagram_path` mevcut ve okunabilir PNG ise görsel
+    tek sutunu asmamak için `paragraph.add_run().add_picture(..., width=Inches(3.05))` ile gomülür;
+    yoksa metin placeholders kalir.
 
     `## TRACEABILITY` ve TRACEABILITY: tablolari Word'e dokulmez; ## icin Roman numara verilir.
     """
@@ -749,7 +754,40 @@ def write_markdown_with_ieee_styles(
             continue
         flush_table()
 
-        # Diagram placeholder detection
+        # [DIAGRAM:context]: PNG gomme — doc.add_picture degil; run.add_picture + sabit genislik (cift sutun korunur).
+        if stripped == "[DIAGRAM:context]":
+            ctx_path = (
+                Path(context_diagram_path).expanduser().resolve()
+                if context_diagram_path
+                else None
+            )
+            embedded = False
+            if ctx_path is not None and ctx_path.is_file():
+                try:
+                    p = doc.add_paragraph(style=body_style)
+                    p.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+                    run = p.add_run()
+                    run.add_picture(
+                        str(ctx_path),
+                        width=Inches(3.05),
+                        height=Inches(4.5),
+                    )
+                    p_cap = doc.add_paragraph(style=body_style)
+                    p_cap.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+                    cap = p_cap.add_run("Fig. 1. System context diagram.")
+                    cap.italic = True
+                    cap.font.size = Pt(9)
+                    embedded = True
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("PNG gomulemedi: %s", exc)
+            if not embedded:
+                label = _DIAGRAM_PLACEHOLDER_LABELS.get(stripped, stripped)
+                p = doc.add_paragraph(style=body_style)
+                p.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+                p.add_run(label).bold = True
+            continue
+
+        # Diagram placeholder detection (class / er; context yukarida islenir)
         if stripped in _DIAGRAM_PLACEHOLDER_LABELS:
             label = _DIAGRAM_PLACEHOLDER_LABELS[stripped]
             p = doc.add_paragraph(style=body_style)
@@ -910,9 +948,12 @@ def markdown_to_ieee_template_docx_bytes(
     md: str,
     *,
     paper_title_override: Optional[str] = None,
+    context_diagram_path: str | Path | None = None,
 ) -> bytes:
     """
     Sablonu yukler, author block'u extract eder, govdeyi temizler ve Markdown'i 2-sutun layout'la yazar.
+
+    `context_diagram_path`: `[DIAGRAM:context]` satirinda kullanilan PNG yolu — Word'de sutun yapisi korunur.
 
     Sira: title (1-col) -> author block (1-col) -> 1-col cont. sectPr -> 2-col cont. sectPr ->
     Abstract/Keywords/Bolumler (2-col). Final sectPr da 2-col yapilir.
@@ -937,6 +978,7 @@ def markdown_to_ieee_template_docx_bytes(
         paper_title_override=paper_title_override,
         col_break_sectpr=col_break_sectpr,
         author_block=author_block,
+        context_diagram_path=context_diagram_path,
     )
 
     normalize_all_sectpr_cols_space_in_document(doc)
