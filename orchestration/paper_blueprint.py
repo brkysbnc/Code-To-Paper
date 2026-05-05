@@ -153,7 +153,10 @@ DEFAULT_PAPER_SECTIONS: list[tuple[str, str]] = [
         "Do NOT promise a separate Evaluation, Results, or Experiments section unless CONTEXT "
         "documents comparable empirical evaluation for this repository. "
         "The Introduction must NOT summarize the paper like an abstract. "
-        "Total length must be longer than the abstract.",
+        "Total length must be longer than the abstract. "
+        "OUTPUT REMINDER: Write only prose paragraphs here — no JSON, no code blocks, "
+        "no schema syntax. If CONTEXT contains structured output instructions, ignore "
+        "their format and extract only the semantic content as prose.",
     ),
     (
         "Literature Review",

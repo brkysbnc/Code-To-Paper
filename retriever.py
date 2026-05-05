@@ -10,6 +10,9 @@ Temel akış:
 3. Child splitter arama isabeti yüksek küçük blokları üretir.
 4. Child dokümanlar Chroma'ya yazılır.
 5. Parent dokümanlar InMemoryStore içinde tutulur.
+6. Writer CONTEXT'ine girmemesi gereken dosyalar indekslenirken metadata ile isaretlenir;
+   multi-query akisi cocuk isabetlerinde ve parent paketlemede `document_blocked_for_writer_context`
+   ile filtrelenir (eski indekslerde bile path/icerik sezgisi devreye girer).
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Iterable
@@ -162,6 +166,73 @@ DEFAULT_CHILD_CHUNK_OVERLAP = 50
 DEFAULT_COLLECTION_NAME = "code_parent_child_chunks"
 PARENT_ID_KEY = "parent_id"
 DEFAULT_CONTEXT_TOKEN_BUDGET = 10_000
+
+# Writer CONTEXT'ine alinmayacak kaynaklar bu metadata ile isaretlenir (yalniz True iken etkili).
+_WRITER_CONTEXT_EXCLUDE_KEY = "exclude_from_writer_context"
+
+# Proje yapisi: JSON-only Writer prompt dosyasi AcademicWriter CONTEXT'ine girmemeli (indirect injection).
+_WRITER_CONTEXT_BLOCKED_PATH_SUFFIXES: tuple[str, ...] = (
+    "agents/ieee_json_writer.py",
+)
+
+
+def _normalize_repo_relative_path_str(relative_path: str) -> str:
+    """Windows/posix ayraclarini tek forma indirger (path karsilastirmasi icin)."""
+    return (relative_path or "").replace("\\", "/").strip().lower()
+
+
+def _metadata_exclude_writer_context_truthy(metadata: dict | None) -> bool:
+    """
+    Chroma/LangChain metadata degerleri bazen bool yerine string tutar; True kabul edilen tum varyantlari yakalar.
+    """
+    if not metadata:
+        return False
+    v = metadata.get(_WRITER_CONTEXT_EXCLUDE_KEY)
+    if v is True:
+        return True
+    if isinstance(v, str) and v.strip().lower() == "true":
+        return True
+    if v == 1:
+        return True
+    return False
+
+
+def should_exclude_from_writer_context(*, relative_path: str, text: str) -> bool:
+    """
+    AcademicWriter CONTEXT'ine konmamasi gereken dosya parcasini path + icerik ile tespit eder.
+
+    - Oncelik: bilinen kod tabani yollari (`_WRITER_CONTEXT_BLOCKED_PATH_SUFFIXES`).
+    - Ek: parca metninde JSON-only prompt imzalari (IEEE_JSON_ONLY_PROMPT, Output ONLY … JSON, vb.).
+    Eski indekslerde metadata bayragi olmasa bile path/icerik yakalarsa parent paketleme elenir.
+    """
+    norm = _normalize_repo_relative_path_str(relative_path)
+    for suffix in _WRITER_CONTEXT_BLOCKED_PATH_SUFFIXES:
+        if norm == suffix or norm.endswith("/" + suffix):
+            return True
+    if not text:
+        return False
+    if "IEEE_JSON_ONLY_PROMPT" in text:
+        return True
+    low = text.lower()
+    if re.search(r"output\s+only[^\n]{0,120}json", low):
+        return True
+    if "valid json object" in low:
+        return True
+    return False
+
+
+def document_blocked_for_writer_context(doc: Document) -> bool:
+    """
+    Tek bir LangChain Document icin Writer baglam filtresi (cocuk veya parent).
+
+    Sira: (1) indekslemede yazilan exclude metadata, (2) file_path/source + page_content heuristikleri.
+    ParentDocumentRetriever cocuklari parent metadata'dan cogaltir; metadata yoksa yine path ile yakalanir.
+    """
+    md = doc.metadata or {}
+    if _metadata_exclude_writer_context_truthy(md):
+        return True
+    rel = str(md.get("file_path") or md.get("source") or "").strip()
+    return should_exclude_from_writer_context(relative_path=rel, text=doc.page_content or "")
 
 
 def _estimate_tokens(text: str) -> int:
@@ -507,6 +578,12 @@ def _read_document(
         "end_line": line_count,
         "source": relative_path,
     }
+    if should_exclude_from_writer_context(relative_path=relative_path, text=text):
+        metadata[_WRITER_CONTEXT_EXCLUDE_KEY] = True
+        LOGGER.info(
+            "Writer CONTEXT disinda birakildi (prompt/json-imza): %s",
+            relative_path,
+        )
     return Document(page_content=text, metadata=metadata)
 
 
@@ -694,13 +771,26 @@ def query_context(
     """
     Sorgu için parent bağlam dokümanlarını döndürür.
 
-    Retrieval sonucu parent blokları içerdiği için writer agent doğrudan bu
-    çıktı üzerinden akademik metin üretebilir.
+    Retrieval sonucunda Writer CONTEXT filtresi uygulanir (multi-query ile aynı kurallar).
     """
     LOGGER.info("Retrieval basladi: %s", query)
     documents = retriever.invoke(query)
-    LOGGER.info("Retrieval tamamlandi. %s parent dokuman dondu.", len(documents))
-    return documents
+    filtered: list[Document] = []
+    blocked = 0
+    for doc in documents:
+        if not isinstance(doc, Document):
+            continue
+        if document_blocked_for_writer_context(doc):
+            blocked += 1
+            continue
+        filtered.append(doc)
+    if blocked:
+        LOGGER.info(
+            "query_context: %s parent dokuman Writer CONTEXT filtresinden elendi.",
+            blocked,
+        )
+    LOGGER.info("Retrieval tamamlandi. %s parent dokuman dondu.", len(filtered))
+    return filtered
 
 
 def heuristic_planner_queries(
@@ -869,11 +959,15 @@ def retrieve_parent_contexts_multi_query(
     Multi-query sonuçlarını child seviyesinde toplayıp parent bağlama yükseltir.
 
     - Düşük benzerlik skorlarını eleyerek çöp veriyi azaltır.
+    - Writer CONTEXT filtresi: (1) cocuk metadata `exclude_from_writer_context`,
+      (2) parent paketlenmeden once `document_blocked_for_writer_context` — eski indekslerde
+      metadata bayragi olmasa bile `agents/ieee_json_writer.py` yolu veya prompt imzasi yakalanir.
     - Parent blokları token bütçesine göre paketler.
     """
     if not planner_queries:
         return []
 
+    excluded_child_hits = 0
     parent_hits: dict[str, tuple[float, int]] = {}
     for query in planner_queries:
         child_hits = retriever.vectorstore.similarity_search_with_relevance_scores(
@@ -883,11 +977,20 @@ def retrieve_parent_contexts_multi_query(
         for child_doc, score in child_hits:
             if score < similarity_threshold:
                 continue
+            if document_blocked_for_writer_context(child_doc):
+                excluded_child_hits += 1
+                continue
             parent_id = str(child_doc.metadata.get(PARENT_ID_KEY, "")).strip()
             if not parent_id:
                 continue
             best_score, seen_count = parent_hits.get(parent_id, (0.0, 0))
             parent_hits[parent_id] = (max(best_score, score), seen_count + 1)
+
+    if excluded_child_hits:
+        LOGGER.info(
+            "Writer CONTEXT filtresi: %s cocuk isabet exclude_from_writer_context nedeniyle atlandi.",
+            excluded_child_hits,
+        )
 
     if not parent_hits:
         return []
@@ -904,8 +1007,12 @@ def retrieve_parent_contexts_multi_query(
 
     packed_docs: list[Document] = []
     used_tokens = 0
+    excluded_parents = 0
     for doc in parent_docs:
         if not isinstance(doc, Document):
+            continue
+        if document_blocked_for_writer_context(doc):
+            excluded_parents += 1
             continue
         block = _format_context_block(doc)
         block_tokens = _estimate_tokens(block)
@@ -913,6 +1020,12 @@ def retrieve_parent_contexts_multi_query(
             continue
         packed_docs.append(doc)
         used_tokens += block_tokens
+
+    if excluded_parents:
+        LOGGER.info(
+            "Writer CONTEXT filtresi: %s parent blok paketlenmeden elendi (metadata veya path/icerik).",
+            excluded_parents,
+        )
 
     packed_docs = dedupe_parent_documents_by_location(packed_docs)
 
