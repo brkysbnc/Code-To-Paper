@@ -1,0 +1,47 @@
+REFERANS COMMIT (GitHub / son attigin commit)
+================================================
+Hash:   71f9670481ac59008ac17776dc3ebc3eb8f17b2e
+Mesaj:  feat(word): IEEE DOCX icinde context diyagram PNG gomme ve Streamlit oturumu
+Tarih:  2026-05-06 01:45:09 +0300
+
+Bu committen SONRA yerelde yapilan gelistirmeler (henuz commit/push YOK)
+================================================
+
+1) agents/metadata_writer.py  (MODIFIED - git diff ~ 5 ekleme, 44 silme)
+   Amac: abstract'ten deterministik keyword uretiminden "bigram fallback" kaldirma.
+
+   Yapilanlar:
+   - _BIGRAM_STOP_WORDS frozenset tamamen silindi (bigram filtreleri icin kullaniliyordu).
+   - extract_keywords_from_abstract() icindeki su blok tamamen silindi:
+       if len(found) < 3:
+           words = re.findall(...)
+           for i in range(len(words) - 1):
+               ... bigram uretimi, stop word, buyuk harf, min uzunluk ...
+     Yerine tek satir yorum eklendi:
+       # Bigram fallback kaldirildi — cumle parcalari keyword uretiyordu
+
+   - extract_keywords_from_abstract() docstring guncellendi:
+       Eski: 3 asama + bigram fallback anlatimi.
+       Yeni: 2 asama — (1) buyuk harf akronim regex, (2) repo-spesifik bilinen terimler;
+             cikti virgullu string; bos ise "".
+
+   Not: LLM'den gelen keywords listesi + deduplicate_keywords akisi _parse_response()
+        icinde ayni kaldi; degisiklik sadece LLM listesi gelmedigi durumda calisan
+        extract_keywords_from_abstract() icindeki bigram yolu.
+
+
+2) docs/PROJECT_SOURCE_WALKTHROUGH.md  (UNTRACKED - yeni dosya, commit edilmemis)
+   Icerik: proje kaynak gezintisi dokumani (varsa sen eklemissin).
+   Son commite donunca bu dosya kalir (git izlemiyorsa) veya silersen kaybolur.
+
+
+SON COMMITE GERI DONMEK ICIN ORNEK KOMUTLAR
+================================================
+Sadece metadata_writer.py geri al:
+  git checkout -- agents/metadata_writer.py
+
+Tum tracked degisiklikleri son commite sifirla:
+  git reset --hard HEAD
+
+Untracked dosyayi da temizlemek istersin (DIKKAT: WALKTHROUGH kalici silinir):
+  git clean -fd
