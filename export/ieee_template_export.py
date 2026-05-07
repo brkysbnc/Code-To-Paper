@@ -279,19 +279,158 @@ def _split_author_paragraph_into_lines(p_el) -> list:
 
 def _build_author_ghost_table(authors: list):
     """
-    Yazar gruplarini IEEE-stili 2x3 (en fazla 6 yazar) gorunmez tabloya yerlestirir.
-    Tum kenarliklar w:val='none' olarak isaretlenir; sayfada yan yana 3 sutun gozukur.
+    IEEE Conference sablonuyla uyumlu 2x3 (en fazla 6 yazar) gorunmez tablo uretir.
+
+    Her yazar hucrede tek w:p: satirlar <w:br/> ile birlesir. Tum koseler kenarliksiz;
+    tablo genisligi 9026 dxa, sutun grid'i 3008+3008+3010 dxa (toplam 9026).
+
+    Her w:r: sz=18, szCs=18 (9pt). Isim satiri: sira + ust simge ordinal + bosluk + isim.
+    Bolge/kurum ve (of Affiliation) satirlari italik; sehir/ulke ve e-posta duz.
     """
+    # Ingilizce ust simge eki (1st, 2nd, 3rd, 4th, ...).
+    def _ordinal_suffix(n: int) -> str:
+        if 11 <= (n % 100) <= 13:
+            return "th"
+        return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
+    def _paragraph_plain_text(p_el) -> str:
+        return "".join(t.text for t in p_el.iter(qn("w:t")) if t.text)
+
+    def _strip_line_prefix(text: str) -> str:
+        return re.sub(
+            r"^\s*line\s+\d+\s*:\s*",
+            "",
+            (text or "").strip(),
+            flags=re.IGNORECASE,
+        ).strip()
+
+    def _classify_segment(raw: str, segment_index: int) -> str:
+        """
+        L1..L5 veya AFFIL (dept/org devami '(of Affiliation)', italik dept ile ayni).
+        'line N:' oncelikli; yoksa sira veya (of Affiliation) metni.
+        """
+        m = re.match(r"^\s*line\s*(\d+)\s*:", raw or "", flags=re.IGNORECASE)
+        if m:
+            return f"L{int(m.group(1))}"
+        low = (raw or "").strip().lower()
+        if low.startswith("(of affiliation)") or low == "(of affiliation)":
+            return "AFFIL"
+        return {0: "L1", 1: "L2", 2: "L3", 3: "L4", 4: "L5"}.get(segment_index, "L5")
+
+    def _segment_is_italic(kind: str) -> bool:
+        return kind in ("L2", "L3", "AFFIL")
+
+    def _append_run(parent_p, text: str, *, italic: bool = False, superscript: bool = False) -> None:
+        """Tek w:r: 9pt (half-points 18), istege bagli italik ve ust simge."""
+        if text is None:
+            text = ""
+        r_el = OxmlElement("w:r")
+        rpr = OxmlElement("w:rPr")
+        sz = OxmlElement("w:sz")
+        sz.set(qn("w:val"), "18")
+        rpr.append(sz)
+        sz_cs = OxmlElement("w:szCs")
+        sz_cs.set(qn("w:val"), "18")
+        rpr.append(sz_cs)
+        if italic:
+            rpr.append(OxmlElement("w:i"))
+        if superscript:
+            va = OxmlElement("w:vertAlign")
+            va.set(qn("w:val"), "superscript")
+            rpr.append(va)
+        r_el.append(rpr)
+        t_el = OxmlElement("w:t")
+        t_el.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        t_el.text = text
+        r_el.append(t_el)
+        parent_p.append(r_el)
+
+    def _append_break(parent_p) -> None:
+        """Satir sonu: w:r icinde w:br (sablonla ayni yapı)."""
+        r_el = OxmlElement("w:r")
+        r_el.append(OxmlElement("w:br"))
+        parent_p.append(r_el)
+
+    def _make_merged_author_paragraph(line_paragraphs: list, author_ord: int):
+        """
+        Bir yazarin satir basina bir w:p listesini tek w:p'de birlestirir.
+        'line N:' on ekleri gosterimden dusurulur.
+        """
+        p_el = OxmlElement("w:p")
+        ppr = OxmlElement("w:pPr")
+
+        psty = OxmlElement("w:pStyle")
+        psty.set(qn("w:val"), "Author")
+        ppr.append(psty)
+
+        jc = OxmlElement("w:jc")
+        jc.set(qn("w:val"), "center")
+        ppr.append(jc)
+
+        # 5 pt on bosluk = 100 twips; sablon beforeAutospacing=1
+        spacing = OxmlElement("w:spacing")
+        spacing.set(qn("w:before"), "100")
+        spacing.set(qn("w:beforeAutospacing"), "1")
+        spacing.set(qn("w:after"), "0")
+        spacing.set(qn("w:line"), "240")
+        spacing.set(qn("w:lineRule"), "auto")
+        ppr.append(spacing)
+
+        p_el.append(ppr)
+
+        paras = list(line_paragraphs or [])
+        if not paras:
+            p_el.append(OxmlElement("w:r"))
+            return p_el
+
+        for seg_i, src_p in enumerate(paras):
+            raw = _paragraph_plain_text(src_p)
+            kind = _classify_segment(raw, seg_i)
+            body = _strip_line_prefix(raw)
+
+            if seg_i > 0:
+                _append_break(p_el)
+
+            if seg_i == 0:
+                _append_run(p_el, str(author_ord), italic=False, superscript=False)
+                _append_run(p_el, _ordinal_suffix(author_ord), italic=False, superscript=True)
+                _append_run(p_el, " ", italic=False, superscript=False)
+                _append_run(p_el, body, italic=False, superscript=False)
+            else:
+                _append_run(
+                    p_el,
+                    body,
+                    italic=_segment_is_italic(kind),
+                    superscript=False,
+                )
+
+        return p_el
+
+    def _make_cell(inner_p, col_idx: int) -> OxmlElement:
+        # Grid: 3008, 3008, 3010 dxa — hucre genisligi sutuna esitlenir
+        col_widths = ("3008", "3008", "3010")
+        tc = OxmlElement("w:tc")
+        tc_pr = OxmlElement("w:tcPr")
+        tc_w = OxmlElement("w:tcW")
+        tc_w.set(qn("w:w"), col_widths[col_idx])
+        tc_w.set(qn("w:type"), "dxa")
+        tc_pr.append(tc_w)
+        tc.append(tc_pr)
+        tc.append(inner_p)
+        return tc
+
     tbl = OxmlElement("w:tbl")
 
-    tblPr = OxmlElement("w:tblPr")
-    tblJc = OxmlElement("w:jc")
-    tblJc.set(qn("w:val"), "center")
-    tblPr.append(tblJc)
-    tblW = OxmlElement("w:tblW")
-    tblW.set(qn("w:w"), "5000")
-    tblW.set(qn("w:type"), "pct")
-    tblPr.append(tblW)
+    tbl_pr = OxmlElement("w:tblPr")
+    tbl_jc = OxmlElement("w:jc")
+    tbl_jc.set(qn("w:val"), "center")
+    tbl_pr.append(tbl_jc)
+
+    tbl_w = OxmlElement("w:tblW")
+    tbl_w.set(qn("w:w"), "9026")
+    tbl_w.set(qn("w:type"), "dxa")
+    tbl_pr.append(tbl_w)
+
     borders = OxmlElement("w:tblBorders")
     for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
         bd = OxmlElement(f"w:{side}")
@@ -300,57 +439,30 @@ def _build_author_ghost_table(authors: list):
         bd.set(qn("w:space"), "0")
         bd.set(qn("w:color"), "auto")
         borders.append(bd)
-    tblPr.append(borders)
-    tblLook = OxmlElement("w:tblLook")
-    tblLook.set(qn("w:val"), "0000")
-    tblPr.append(tblLook)
-    tbl.append(tblPr)
+    tbl_pr.append(borders)
 
-    tblGrid = OxmlElement("w:tblGrid")
-    for _ in range(3):
+    tbl_look = OxmlElement("w:tblLook")
+    tbl_look.set(qn("w:val"), "0000")
+    tbl_pr.append(tbl_look)
+    tbl.append(tbl_pr)
+
+    grid = OxmlElement("w:tblGrid")
+    for w in ("3008", "3008", "3010"):
         gc = OxmlElement("w:gridCol")
-        gc.set(qn("w:w"), "1666")
-        tblGrid.append(gc)
-    tbl.append(tblGrid)
-
-    def _make_cell(paragraphs=None):
-        tc = OxmlElement("w:tc")
-        tcPr = OxmlElement("w:tcPr")
-        tcW = OxmlElement("w:tcW")
-        tcW.set(qn("w:w"), "1666")
-        tcW.set(qn("w:type"), "pct")
-        tcPr.append(tcW)
-        tc.append(tcPr)
-        if paragraphs:
-            for p in paragraphs:
-                ppr = p.find(qn("w:pPr"))
-                if ppr is None:
-                    ppr = OxmlElement("w:pPr")
-                    p.insert(0, ppr)
-                for existing in list(ppr.findall(qn("w:jc"))):
-                    ppr.remove(existing)
-                jc = OxmlElement("w:jc")
-                jc.set(qn("w:val"), "center")
-                ppr.append(jc)
-                spacing = OxmlElement("w:spacing")
-                spacing.set(qn("w:before"), "0")
-                spacing.set(qn("w:after"), "0")
-                spacing.set(qn("w:line"), "240")
-                spacing.set(qn("w:lineRule"), "auto")
-                ppr.append(spacing)
-                tc.append(p)
-        else:
-            tc.append(OxmlElement("w:p"))
-        return tc
+        gc.set(qn("w:w"), w)
+        grid.append(gc)
+    tbl.append(grid)
 
     for row in range(2):
         tr = OxmlElement("w:tr")
         for col in range(3):
             idx = row * 3 + col
             if idx < len(authors):
-                tr.append(_make_cell(authors[idx]))
+                merged_p = _make_merged_author_paragraph(authors[idx], idx + 1)
+                tr.append(_make_cell(merged_p, col))
             else:
-                tr.append(_make_cell())
+                empty_p = OxmlElement("w:p")
+                tr.append(_make_cell(empty_p, col))
         tbl.append(tr)
 
     return tbl
