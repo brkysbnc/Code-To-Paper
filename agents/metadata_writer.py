@@ -6,7 +6,8 @@ Akis (tek LLM cagrisi):
 2) Body 18000, RAG context 12000 char ile kesilir; LLM'e str.replace ile enjekte edilir
    (str.format kullanilmaz — bolum metinlerindeki literal { } kod fence'lerini bozmamak icin).
 3) LLM yalnizca {"title", "abstract", "keywords"} JSON dondurur; abstract 250 kelimede sertce kesilir.
-4) Keywords oncelikle LLM'den alinir, parse edilemezse regex fallback calisir.
+4) Keywords oncelikle LLM'den alinir; abstract'ta teyit edilemeyenler (ek API yok) silinir,
+   listeyi deterministic extractor ile tamamlar. Parse edilemezse yalnizca regex fallback.
 """
 
 from __future__ import annotations
@@ -157,6 +158,57 @@ def deduplicate_keywords(keywords: list[str]) -> list[str]:
     return result
 
 
+def _keywords_grounded_in_abstract(keywords: List[str], abstract: str) -> List[str]:
+    """
+    LLM keyword adaylarini abstract metnine baglar: yalnizca abstract icinde (buyuk/kucuk harf
+    duyarsiz alt-dize olarak) gecen ifadeler kalir. Ek model cagrisi yok; halisunasyonu keser.
+    """
+    hay = (abstract or "").lower()
+    out: List[str] = []
+    seen: set[str] = set()
+    for k in keywords:
+        t = str(k).strip()
+        if not t:
+            continue
+        if t.lower() in hay and t.lower() not in seen:
+            seen.add(t.lower())
+            out.append(t)
+    return out
+
+
+def _merge_keywords_llm_then_deterministic(
+    grounded_llm: List[str],
+    abstract: str,
+    *,
+    max_keywords: int = 6,
+) -> str:
+    """
+    Once LLM'den gecen abstract-ici keyword'leri kullanir; 6'ya tamamlamak icin
+    extract_keywords_from_abstract ile doldurur (tekrarsiz). LLM listesi bossa tamamen deterministic.
+    """
+    cap = max(1, int(max_keywords))
+    out: List[str] = []
+    seen: set[str] = set()
+    for k in grounded_llm:
+        tl = k.lower()
+        if tl in seen:
+            continue
+        seen.add(tl)
+        out.append(k)
+        if len(out) >= cap:
+            return ", ".join(out)
+    det = extract_keywords_from_abstract(abstract, max_keywords=cap)
+    for part in [p.strip() for p in det.split(",") if p.strip()]:
+        pl = part.lower()
+        if pl in seen:
+            continue
+        seen.add(pl)
+        out.append(part)
+        if len(out) >= cap:
+            break
+    return ", ".join(out)
+
+
 def extract_keywords_from_abstract(abstract: str, max_keywords: int = 6) -> str:
     """
     Verilen abstract'ten deterministik IEEE keyword listesi cikarir; sonuc abstract metninin alt kumesidir.
@@ -221,11 +273,10 @@ def extract_keywords_from_abstract(abstract: str, max_keywords: int = 6) -> str:
 
 class MetadataWriter:
     """
-    RAG destekli paper title/abstract uretici; keywords abstract uzerinden deterministik turetilir.
+    RAG destekli title/abstract + tek JSON ciktisinda LLM keywords.
 
-    LLM yalnizca title + abstract dondurur; keyword JSON'a girmez. generate() bos JSON / parse hatasi /
-    LLM exception durumlarinda bos string'lerle dondurerek cagri tarafinda DEFAULT placeholder'in
-    devreye girmesine izin verir.
+    generate() ciktisinda keywords: LLM listesi once alinir, abstract icinde gecmeyen terimler silinir,
+    4-6 slot deterministic extractor ile doldurulabilir. Parse/LLM hatasinda alanlar "".
     """
 
     def __init__(self, llm_invoke_func: Callable[[str], str]):
@@ -300,15 +351,23 @@ class MetadataWriter:
         abstract_raw = str(data.get("abstract") or "").strip()
         abstract = MetadataWriter._enforce_word_cap(abstract_raw, 250)
         
-        # Keywords: önce LLM'den oku, fallback olarak regex tabanlı extraction kullan
-        keywords_raw = data.get("keywords") or []
-        if isinstance(keywords_raw, list) and keywords_raw:
-            # LLM liste döndürdü, temizle, deduplicate et ve birleştir
+        # Keywords: LLM listesi / string -> abstract'ta substring dogrulama -> gerekirse deterministic tamamlama.
+        keywords_raw = data.get("keywords")
+        kw_list: List[str] = []
+        if isinstance(keywords_raw, list):
             kw_list = [str(k).strip() for k in keywords_raw if str(k).strip()]
+        elif isinstance(keywords_raw, str) and keywords_raw.strip():
+            kw_list = [p.strip() for p in re.split(r"[,;]", keywords_raw) if p.strip()]
+
+        if kw_list:
             kw_list = deduplicate_keywords(kw_list)
-            keywords = ", ".join(kw_list[:6])
+            grounded = _keywords_grounded_in_abstract(kw_list, abstract)
+            # Az sayida gecerli terim kaldiysa tamamen deterministic daha guvenilir.
+            if len(grounded) < 2:
+                keywords = extract_keywords_from_abstract(abstract)
+            else:
+                keywords = _merge_keywords_llm_then_deterministic(grounded, abstract, max_keywords=6)
         else:
-            # Fallback: regex tabanlı extraction
             keywords = extract_keywords_from_abstract(abstract)
 
         if not MetadataWriter._check_minimum_words(abstract, 150):

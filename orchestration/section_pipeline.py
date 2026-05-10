@@ -529,9 +529,10 @@ def run_paper_pipeline(
         out["sections"] = section_blocks
 
         step = "metadata"
-        # RAG-destekli metadata: kullanici title veya abstract bos biraktiysa heuristic queriesle
-        # ek repo dokumanlari cekilir, MetadataWriter tek LLM cagrisiyla title+abstract uretir.
-        # Keywords her zaman (kullanici verse de uretilse de) abstract metninden deterministik turetilir.
+        # MetadataWriter ciktisi (md) yalnizca asagidaki try blogunda atanir; keyword satirinda md
+        # okunurken atama olmayan dallarda UnboundLocalError olmasin diye baslangicta None tutulur.
+        md = None
+        # Tek LLM cagrisi: title + abstract + keywords (keywords pipeline sonunda onceliklenir).
         if (not user_title or not user_abstract) and section_blocks:
             try:
                 combined_body_for_meta = "\n\n".join(
@@ -564,9 +565,13 @@ def run_paper_pipeline(
             except Exception as meta_exc:  # noqa: BLE001
                 logger.warning("MetadataWriter atlandi (yumusak hata): %s", meta_exc)
 
-        # Keywords ⊆ abstract garantisi: kullanici kendi keyword'unu vermediyse abstract'ten cikar.
-        if not user_keywords and combined_abstract:
-            combined_keywords = extract_keywords_from_abstract(combined_abstract)
+        # Keywords: kullanici girmediyse once MetadataWriter'in LLM keywords'u (tek cagri, ek kota yok),
+        # yoksa veya bossa abstract uzerinden deterministic cikarim.
+        if not user_keywords:
+            if md and (md.get("keywords") or "").strip():
+                combined_keywords = str(md["keywords"]).strip()
+            elif combined_abstract:
+                combined_keywords = extract_keywords_from_abstract(combined_abstract)
 
         out["paper_title"] = combined_title
         out["abstract_text"] = combined_abstract
