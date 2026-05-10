@@ -28,4 +28,4 @@ if __name__ == "__main__":
     passed = sum(1 for p in results.values() if p and Path(p).exists())
     for t, p in results.items():
         print(f"{'✓' if p and Path(p).exists() else '✗'} {t}: {p or 'FAILED'}")
-    print(f"\nTest results: {passed}/3 passed")
+    print(f"\nTest sonucu: {passed}/1 (yalnizca context diyagram)")

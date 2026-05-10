@@ -245,10 +245,12 @@ def combine_paper_markdown(
         cleaned_body = _strip_traceability_tables(cleaned_body)
         cleaned_body = _strip_inline_references_section(cleaned_body)
         
-        # Diyagram placeholder'larını deterministik ekle
+        # Yalnizca context diyagrami: [DIAGRAM:context] (class/ER kaldirildi).
         heading_lower = section_heading.lower()
         if any(k in heading_lower for k in ("system", "architecture", "implementation")):
             for diag in (diagram_selections or []):
+                if diag != "context":
+                    continue
                 cleaned_body += f"\n\n[DIAGRAM:{diag}]"
         
         all_refs.extend(section_refs)

@@ -1,8 +1,8 @@
 """
 Diagram renderer for Code-To-Paper.
 
-Generates three Mermaid diagram types (context, class, er) by prompting Gemini,
-then renders each to PNG and saves them under data/diagrams/.
+Tek desteklenen tur: ic baglam (akis / bilesen diyagramı) — Mermaid ile Gemini'den üretilir,
+PNG olarak data/diagrams/ altına yazilir (classDiagram / ER kaldırıldı).
 
 Render pipeline:
   1. Try mermaid-py (requires `npm install -g @mermaid-js/mermaid-cli`)
@@ -11,7 +11,7 @@ Render pipeline:
 Public API
 ----------
     generate_all_diagrams(repo_context, llm_invoke_func) -> dict[str, str]
-    generate_diagram(diagram_type, repo_context, llm_invoke_func) -> Optional[str]
+    generate_diagram("context", repo_context, llm_invoke_func) -> Optional[str]
 
 Internal helpers
 ----------------
@@ -37,11 +37,10 @@ DIAGRAM_OUTPUT_DIR = Path("data") / "diagrams"
 
 DIAGRAM_PATHS: dict[str, str] = {
     "context": str(DIAGRAM_OUTPUT_DIR / "diagram_context.png"),
-    "class":   str(DIAGRAM_OUTPUT_DIR / "diagram_class.png"),
-    "er":      str(DIAGRAM_OUTPUT_DIR / "diagram_er.png"),
 }
 
-_DIAGRAM_TYPES = ("context", "class", "er")
+# Uretilecek PNG turleri — yalnizca context.
+_DIAGRAM_TYPES: tuple[str, ...] = ("context",)
 
 _PROMPTS: dict[str, str] = {
     "context": (
@@ -70,44 +69,16 @@ _PROMPTS: dict[str, str] = {
         "    Writer --> Exporter\n\n"
         "Repository context:\n{repo_context}"
     ),
-    "class": (
-        "You are a software architecture expert. "
-        "Given the following repository context, generate a Mermaid **classDiagram** "
-        "that shows the main classes/modules and their relationships.\n\n"
-        "Rules:\n"
-        "- Output ONLY the raw Mermaid code, no markdown fences, no explanation.\n"
-        "- The very first line MUST be exactly: classDiagram\n"
-        "- Class names must be plain alphanumeric identifiers (no spaces).\n"
-        "- Method signatures should be simple: +generate_section(prompt) str\n"
-        "- Keep the diagram focused (4-10 classes max).\n\n"
-        "Repository context:\n{repo_context}"
-    ),
-    "er": (
-        "You are a software architecture expert. "
-        "Given the following repository context, generate a Mermaid **erDiagram** "
-        "that shows the main data entities and their relationships.\n\n"
-        "Rules:\n"
-        "- Output ONLY the raw Mermaid code, no markdown fences, no explanation.\n"
-        "- The very first line MUST be exactly: erDiagram\n"
-        "- Entity names must be plain uppercase alphanumeric identifiers (no spaces).\n"
-        "- Attribute types must be simple: string, int, bool\n"
-        "- Keep the diagram focused (3-8 entities max).\n\n"
-        "Repository context:\n{repo_context}"
-    ),
 }
 
 # Expected first tokens for each diagram type (used for validation and sanitization)
 _EXPECTED_STARTS: dict[str, tuple[str, ...]] = {
     "context": ("graph td", "graph lr", "graph rl", "graph tb", "graph bt", "flowchart"),
-    "class": ("classdiagram",),
-    "er": ("erdiagram",),
 }
 
-# Canonical first line that must appear in the output for each type
+# Beklenen anchor satiri (sanitize icin)
 _ANCHOR_LINES: dict[str, tuple[str, ...]] = {
     "context": ("graph TD", "graph LR", "graph RL", "graph TB", "graph BT", "flowchart TD", "flowchart LR"),
-    "class": ("classDiagram",),
-    "er": ("erDiagram",),
 }
 
 
@@ -123,7 +94,7 @@ def _sanitize_mermaid(diagram_type: str, text: str) -> str:
     Steps:
     1. Strip all ```mermaid / ``` fences (handles nested or multiple fences).
     2. Find the first line that matches the expected diagram-type keyword
-       (e.g. "graph TD", "classDiagram", "erDiagram") — discards any LLM
+       (orneğin graph TD / flowchart TD) — discards any LLM
        preamble such as "Here is the diagram:" or explanation text.
     3. Return everything from that anchor line onward, stripped of trailing
        whitespace.
@@ -321,7 +292,7 @@ def generate_diagram(
     Parameters
     ----------
     diagram_type : str
-        One of "context", "class", "er".
+        Yalnizca 'context' desteklenir; baska turler None doner.
     repo_context : str
         Textual summary of the repository (e.g. file tree + key code snippets).
     llm_invoke_func : Callable[[str], str]
@@ -332,6 +303,13 @@ def generate_diagram(
     str
         Absolute path to the saved PNG file, or None on failure.
     """
+    if diagram_type not in DIAGRAM_PATHS:
+        logger.warning(
+            "diagram_renderer: desteklenmeyen diagram_type=%r; yalnizca 'context'",
+            diagram_type,
+        )
+        return None
+
     logger.info("diagram_renderer: generating diagram_type=%r", diagram_type)
 
     # Step 1 — Generate Mermaid code
@@ -372,7 +350,7 @@ def generate_all_diagrams(
     llm_invoke_func: Callable[[str], str],
 ) -> dict[str, str]:
     """
-    Generates context, class, and er diagrams and saves them as PNG files.
+    Context diyagrami uretir ve PNG olarak kaydeder (tek tur).
 
     Parameters
     ----------

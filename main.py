@@ -620,13 +620,9 @@ def _render_agent_preview_panel() -> None:
         )
         _manual_diagram_selection: list[str] = []
         if diagram_mode_ui == "Manuel seç":
-            _manual_cols = st.columns(3)
-            if _manual_cols[0].checkbox("Context Diagram", key="diag_context"):
+            # Yalnizca context diyagrami; kutucuk acik ise planlayiciya iletilir (bos = context yok).
+            if st.checkbox("Context diagram dahil et", value=True, key="diag_context"):
                 _manual_diagram_selection.append("context")
-            if _manual_cols[1].checkbox("Class Diagram", key="diag_class"):
-                _manual_diagram_selection.append("class")
-            if _manual_cols[2].checkbox("ER Diagram", key="diag_er"):
-                _manual_diagram_selection.append("er")
         _diagram_mode_map = {
             "LLM'e bırak": "llm",
             "Manuel seç": "manual",

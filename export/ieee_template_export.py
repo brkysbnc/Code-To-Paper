@@ -468,6 +468,23 @@ def _build_author_ghost_table(authors: list):
     return tbl
 
 
+def _is_ieee_template_xplore_subtitle_note(text: str) -> bool:
+    """
+    IEEE konferans sablonundan gelen, yazar bolgesindeki sabit uyariyi tespit eder.
+
+    Ornek metin: 'Note: Sub-titles are not captured in Xplore' — kullanici ciktisinda
+    kalmamalidir; extract asamasinda govdeden cikarilir, author_block listesine konmaz.
+    """
+    t = " ".join((text or "").lower().split())
+    if "note:" not in t[:80]:
+        return False
+    if "xplore" in t:
+        return True
+    if ("sub-title" in t or "subtitles" in t.replace(" ", "")) and ("captur" in t):
+        return True
+    return False
+
+
 def extract_author_block_elements(doc: DocumentObject) -> list:
     """
     Author paragraflarini govdeden cikarir; mumkunse bunlari 2x3 gorunmez bir tabloya
@@ -475,7 +492,7 @@ def extract_author_block_elements(doc: DocumentObject) -> list:
     bolunur ve 'line 1:' baslangiclari yeni yazar olarak gruplanir.
 
     Donus listesi:
-      - (varsa) 'Note:' aciklama paragrafi (centered)
+      - (varsa) 'Note:' aciklama paragrafi (centered); IEEE Xplore alt baslik uyarisı ATLANIR
       - 1 adet w:tbl (3 sutunlu, kenarliksiz) yazar bilgileri
     Yazar paragrafi bulunamazsa: ESKI DAVRANIS (paragraf listesi) — geriye donuk uyumluluk.
     Sablon zaten yazar tablosu tasiyorsa o tablo deepcopy ile oldugu gibi korunur.
@@ -495,7 +512,10 @@ def extract_author_block_elements(doc: DocumentObject) -> list:
                 for sp in list(ppr.findall(qn("w:sectPr"))):
                     ppr.remove(sp)
             text = "".join(t.text for t in copied.iter(qn("w:t")) if t.text)
-            if "Note:" in text:
+            if _is_ieee_template_xplore_subtitle_note(text):
+                # IEEE sablon uyari paragrafi — note_p/yazar ham metnine yazma.
+                pass
+            elif "Note:" in text:
                 note_p = copied
             elif text.strip():
                 raw_author_paragraphs.extend(_split_author_paragraph_into_lines(copied))
@@ -673,8 +693,6 @@ def peel_manuscript_title(md: str) -> Tuple[Optional[str], str]:
 
 _DIAGRAM_PLACEHOLDER_LABELS: dict[str, str] = {
     "[DIAGRAM:context]": "[ Figure: Context Diagram — to be inserted here ]",
-    "[DIAGRAM:class]":   "[ Figure: Class Diagram — to be inserted here ]",
-    "[DIAGRAM:er]":      "[ Figure: Entity-Relationship Diagram — to be inserted here ]",
 }
 
 def write_markdown_with_ieee_styles(
@@ -899,14 +917,8 @@ def write_markdown_with_ieee_styles(
                 p.add_run(label).bold = True
             continue
 
-        # Diagram placeholder detection (class / er; context yukarida islenir)
-        if stripped in _DIAGRAM_PLACEHOLDER_LABELS:
-            label = _DIAGRAM_PLACEHOLDER_LABELS[stripped]
-            p = doc.add_paragraph(style=body_style)
-            p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-            run = p.add_run(label)
-            run.bold = True
-            run.italic = True
+        # Desteklenmeyen / kaldirilmis [DIAGRAM:...] satirlari (class, er, bilinmeyen).
+        if stripped.startswith("[DIAGRAM:") and stripped != "[DIAGRAM:context]":
             continue
 
         if stripped in ("", "---"):

@@ -382,8 +382,7 @@ def run_paper_pipeline(
                         retriever,
                         planner_queries=[
                             "system architecture main components",
-                            "data models database schema",
-                            "class structure object oriented",
+                            "pipeline modules data flow",
                         ],
                         top_k_per_query=3,
                         similarity_threshold=0.3,
