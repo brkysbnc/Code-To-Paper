@@ -800,7 +800,46 @@ def write_markdown_with_ieee_styles(
     last_h1_text = ""
     first_subheading_seen = False
 
+    # Baslik (Romen I., II., A. B. alt baslik, ####, References basligi) sonrasi en fazla
+    # TEK bos Body paragrafi; Writer + Markdown'daki ard arda bos satirlar Word'de ust uste
+    # coklu bosluk olarak gorunmesin diye ardisik bos paragraflar birlestirilir.
+    _heading_spacer_pending = False
+    _heading_spacer_emitted = False
+    _last_para_empty_body = False
+
+    def _mark_heading_for_single_blank_after() -> None:
+        """Yeni baslik eklendi: sonraki govde/kod/tablo oncesinde en fazla bir bos paragraf."""
+        nonlocal _heading_spacer_pending, _heading_spacer_emitted, _last_para_empty_body
+        _heading_spacer_pending = True
+        _heading_spacer_emitted = False
+        _last_para_empty_body = False
+
+    def _ensure_single_blank_after_heading_before_non_empty_content() -> None:
+        """Baslik ile ilk dolu icerik arasinda bos satir yoksa tek Body boslugu ekler."""
+        nonlocal _heading_spacer_pending, _heading_spacer_emitted, _last_para_empty_body
+        if _heading_spacer_pending and not _heading_spacer_emitted:
+            doc.add_paragraph("", style=body_style)
+            _heading_spacer_emitted = True
+        _heading_spacer_pending = False
+        _heading_spacer_emitted = False
+        _last_para_empty_body = False
+
+    def _emit_body_blank_from_markdown() -> None:
+        """Markdown bos veya --- satiri: baslik sonrasi tekil bos; diger yerde ardisik bos birlestirilir."""
+        nonlocal _heading_spacer_pending, _heading_spacer_emitted, _last_para_empty_body
+        if _heading_spacer_pending:
+            if not _heading_spacer_emitted:
+                doc.add_paragraph("", style=body_style)
+                _heading_spacer_emitted = True
+                _last_para_empty_body = True
+            return
+        if _last_para_empty_body:
+            return
+        doc.add_paragraph("", style=body_style)
+        _last_para_empty_body = True
+
     def flush_code() -> None:
+        nonlocal _last_para_empty_body
         if not code_lines:
             return
         blob = "\n".join(code_lines)
@@ -808,19 +847,24 @@ def write_markdown_with_ieee_styles(
         if _is_mermaid_or_edge_code_blob(blob):
             code_lines.clear()
             return
+        _ensure_single_blank_after_heading_before_non_empty_content()
         p = doc.add_paragraph(style=body_style)
         _mono_runs(p, blob)
         p.paragraph_format.left_indent = Pt(12)
         p.paragraph_format.space_after = Pt(6)
         code_lines.clear()
+        _last_para_empty_body = False
 
     def flush_table() -> None:
+        nonlocal _last_para_empty_body
         if not table_buf:
             return
+        _ensure_single_blank_after_heading_before_non_empty_content()
         p = doc.add_paragraph(style=body_style)
         _mono_runs(p, "\n".join(table_buf))
         p.paragraph_format.space_after = Pt(6)
         table_buf.clear()
+        _last_para_empty_body = False
 
     for raw_line in body_md.splitlines():
         line = raw_line.rstrip("\n")
@@ -855,10 +899,12 @@ def write_markdown_with_ieee_styles(
         # ---- References modu: '## References' sonrasi [n] satirlari 'references' stilinde
         if in_references:
             if re.match(r"^\s*\[\d+\]", stripped):
+                _ensure_single_blank_after_heading_before_non_empty_content()
                 doc.add_paragraph(stripped, style=ref_entry_style)
+                _last_para_empty_body = False
                 continue
             if stripped == "":
-                doc.add_paragraph("", style=body_style)
+                _emit_body_blank_from_markdown()
                 continue
             # Yeni heading geldiyse moddan cik; akisa devam et (heading dallari islesin).
             if stripped.startswith("#"):
@@ -886,6 +932,7 @@ def write_markdown_with_ieee_styles(
 
         # [DIAGRAM:context]: PNG gomme — doc.add_picture degil; run.add_picture + sabit genislik (cift sutun korunur).
         if stripped == "[DIAGRAM:context]":
+            _ensure_single_blank_after_heading_before_non_empty_content()
             ctx_path = (
                 Path(context_diagram_path).expanduser().resolve()
                 if context_diagram_path
@@ -908,6 +955,7 @@ def write_markdown_with_ieee_styles(
                     cap.italic = True
                     cap.font.size = Pt(9)
                     embedded = True
+                    _last_para_empty_body = False
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("PNG gomulemedi: %s", exc)
             if not embedded:
@@ -915,6 +963,7 @@ def write_markdown_with_ieee_styles(
                 p = doc.add_paragraph(style=body_style)
                 p.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
                 p.add_run(label).bold = True
+                _last_para_empty_body = False
             continue
 
         # Desteklenmeyen / kaldirilmis [DIAGRAM:...] satirlari (class, er, bilinmeyen).
@@ -922,25 +971,29 @@ def write_markdown_with_ieee_styles(
             continue
 
         if stripped in ("", "---"):
-            doc.add_paragraph("", style=body_style)
+            _emit_body_blank_from_markdown()
             continue
 
         # Abstract / Keywords: IEEE paragraf stilleri (Body Text degil).
         abstract_prefix = "Abstract\u2014"
         if stripped.startswith(abstract_prefix):
+            _ensure_single_blank_after_heading_before_non_empty_content()
             p_abs = doc.add_paragraph(style=abstract_style)
             r_abs = p_abs.add_run(abstract_prefix)
             r_abs.bold = True
             r_abs.italic = True
             p_abs.add_run(stripped[len(abstract_prefix):].lstrip())
+            _last_para_empty_body = False
             continue
 
         keywords_prefix = "Keywords\u2014"
         if stripped.startswith(keywords_prefix):
+            _ensure_single_blank_after_heading_before_non_empty_content()
             p_kw = doc.add_paragraph(style=keywords_style)
             r_kw = p_kw.add_run(keywords_prefix)
             r_kw.italic = True
             p_kw.add_run(stripped[len(keywords_prefix):].lstrip())
+            _last_para_empty_body = False
             # Legacy path icin column break inject; yeni akista (author_block doluyken) atlanir.
             if author_block is None and col_break_sectpr is not None and not col_break_injected:
                 append_column_transition_paragraph(doc, col_break_sectpr)
@@ -963,6 +1016,7 @@ def write_markdown_with_ieee_styles(
             heading_text = f"{_to_roman_numeral(h1_counter)}. {heading_raw}"
             p = doc.add_paragraph(heading_text, style=h1_style)
             p.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+            _mark_heading_for_single_blank_after()
             continue
 
         if stripped.startswith("## "):
@@ -974,6 +1028,7 @@ def write_markdown_with_ieee_styles(
                 in_references = True
                 doc.add_paragraph("References", style=ref_heading_style)
                 subsection_counter = 0
+                _mark_heading_for_single_blank_after()
                 continue
             if author_block is None and col_break_sectpr is not None and not col_break_injected:
                 append_column_transition_paragraph(doc, col_break_sectpr)
@@ -986,6 +1041,7 @@ def write_markdown_with_ieee_styles(
             heading_text = f"{_to_roman_numeral(h1_counter)}. {heading_raw}"
             p = doc.add_paragraph(heading_text, style=h1_style)
             p.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+            _mark_heading_for_single_blank_after()
             continue
 
         if stripped.startswith("### "):
@@ -1012,17 +1068,21 @@ def write_markdown_with_ieee_styles(
             p = doc.add_paragraph(style=h2_style)
             run = p.add_run(heading_text)
             run.italic = True
+            _mark_heading_for_single_blank_after()
             continue
 
         if stripped.startswith("#### "):
             p = doc.add_paragraph(stripped[5:].strip(), style=h3_style)
+            _mark_heading_for_single_blank_after()
             continue
 
         m = re.fullmatch(r"\*\*(.+)\*\*", stripped)
         if m:
+            _ensure_single_blank_after_heading_before_non_empty_content()
             p = doc.add_paragraph(style=body_style)
             r = p.add_run(m.group(1))
             r.bold = True
+            _last_para_empty_body = False
             continue
 
         # Skip plain-text lines that duplicate the current section heading
@@ -1034,11 +1094,13 @@ def write_markdown_with_ieee_styles(
         if _is_mermaid_syntax_line(stripped):
             continue
 
+        _ensure_single_blank_after_heading_before_non_empty_content()
         p = doc.add_paragraph(line, style=body_style)
         p.alignment = WD_PARAGRAPH_ALIGNMENT.JUSTIFY
         for r in p.runs:
             if r.font.size is None:
                 r.font.size = Pt(10)
+        _last_para_empty_body = False
 
     flush_code()
     flush_table()
