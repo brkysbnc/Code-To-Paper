@@ -75,6 +75,81 @@ LOGGER = logging.getLogger(__name__)
 _DEFAULT_EMBED_MIN_INTERVAL_S = 0.62
 _DEFAULT_EMBED_BATCH_SIZE = 100
 
+# gemini-embedding-001 cikis boyutu (API cevabi bos geldiginde pad icin referans).
+_GEMINI_EMBEDDING_001_DIM = 768
+
+
+def _infer_embedding_dim_from_vectors(vecs: list | None, *, default: int = _GEMINI_EMBEDDING_001_DIM) -> int:
+    """
+    Ilk gecerli (None olmayan, icinde en az bir eleman olan) vektorun uzunlugunu dondurur.
+
+    Tum liste None veya bos vektorlerden olusuyorsa `default` kullanilir; boylece
+    Chroma upsert icin tutarli boyutta sifir vektor uretilebilir.
+    """
+    if not vecs:
+        return default
+    for v in vecs:
+        if v is None:
+            continue
+        try:
+            seq = list(v)
+        except TypeError:
+            continue
+        if seq:
+            return len(seq)
+    return default
+
+
+def _coerce_gemini_batch_embeddings(batch_len: int, vecs: list | None) -> list[list[float]]:
+    """
+    Inner `embed_documents` ciktisini her zaman `batch_len` uzunlugunda float vektor listesine cevirir.
+
+    Chroma `upsert` bos embedding listesi (`[]`) ile patlar; Gemini bazen guvenlik veya
+    servis tarafinda `None`, bos liste veya girdi sayisindan kisa/uzun liste donebilir.
+    Eksik indeksler sifir vektor, fazla indeksler yok sayilir (uyari loglanir).
+    """
+    if batch_len <= 0:
+        return []
+    dim = _infer_embedding_dim_from_vectors(vecs, default=_GEMINI_EMBEDDING_001_DIM)
+    if vecs is None:
+        LOGGER.warning(
+            "Embedding API None dondurdu (batch_len=%s); tum parcalar sifir vektor (%s boy) ile dolduruldu.",
+            batch_len,
+            dim,
+        )
+        return [[0.0] * dim for _ in range(batch_len)]
+    if len(vecs) == 0:
+        LOGGER.warning(
+            "Embedding API bos vektor listesi dondurdu (batch_len=%s); tum parcalar sifir vektor ile dolduruldu.",
+            batch_len,
+        )
+        return [[0.0] * dim for _ in range(batch_len)]
+    if len(vecs) != batch_len:
+        LOGGER.warning(
+            "Embedding vektor sayisi uyumsuz: beklenen=%s, gelen=%s. Eksikler sifir vektor, fazlalik yok sayilacak.",
+            batch_len,
+            len(vecs),
+        )
+    out: list[list[float]] = []
+    for i in range(batch_len):
+        v = vecs[i] if i < len(vecs) else None
+        if v is None:
+            LOGGER.warning("Batch indeks %s icin embedding yok (None / kisa liste), sifir vektor kullaniliyor.", i)
+            out.append([0.0] * dim)
+            continue
+        try:
+            seq = list(v)
+        except TypeError:
+            LOGGER.warning("Batch indeks %s embedding listeye cevrilemedi, sifir vektor.", i)
+            out.append([0.0] * dim)
+            continue
+        if not seq:
+            LOGGER.warning("Batch indeks %s icin embedding bos dizi, sifir vektor.", i)
+            out.append([0.0] * dim)
+            continue
+        out.append(seq)
+    return out
+
 
 class ThrottledGeminiEmbeddings(Embeddings):
     """
@@ -101,19 +176,32 @@ class ThrottledGeminiEmbeddings(Embeddings):
         """Metinleri batch_size'lik gruplara bolup tek istekle yollar; gruplar arasi throttle uygulanir."""
         if not texts:
             return []
+
         out: list[list[float]] = []
         total = len(texts)
         for start in range(0, total, self._batch_size):
             if start > 0:
                 time.sleep(self._min_interval_s)
             batch = list(texts[start : start + self._batch_size])
-            out.extend(self._embed_batch_with_retry(batch))
+            
+            # Batch icindeki metinleri on-isleme: cok kisa veya bos olanlari temizle
+            # Gemini bazen 0-length stringlerde 400 error veriyor.
+            safe_batch = [t if (t and t.strip()) else " " for t in batch]
+            
+            try:
+                embeddings = self._embed_batch_with_retry(safe_batch)
+                out.extend(embeddings)
+            except Exception as exc:
+                LOGGER.error("Batch embedding basarisiz (start=%s, size=%s): %s", start, len(batch), exc)
+                raise
+
         return out
 
     def embed_query(self, text: str) -> list[float]:
         """Sorgu embeddingi; tek metin -> tek istek (kucuk throttle ile)."""
         time.sleep(self._min_interval_s)
-        return self._embed_batch_with_retry([text])[0]
+        safe_text = text if (text and text.strip()) else " "
+        return self._embed_batch_with_retry([safe_text])[0]
 
     def _embed_batch_with_retry(self, batch: list[str]) -> list[list[float]]:
         """Bir batch icin embed_documents cagrisini 429/503'e karsi sinirli retry ile yapar."""
@@ -124,7 +212,7 @@ class ThrottledGeminiEmbeddings(Embeddings):
         for attempt in range(10):
             try:
                 vecs = self._inner.embed_documents(list(batch))
-                return [list(v) for v in vecs]
+                return _coerce_gemini_batch_embeddings(len(batch), vecs)
             except BaseException as exc:  # noqa: BLE001
                 last_exc = exc
                 err = str(exc).lower()
@@ -282,7 +370,7 @@ def _resolve_repo_persist_dir(repo_url: str, commit_hash: str) -> tuple[Path, st
     Ayni repo + commit icin ayni dizin; commit degisirse yeni dizin (otomatik invalidation).
     """
     token = hashlib.sha256(f"{repo_url}|{commit_hash}".encode("utf-8")).hexdigest()[:16]
-    persist_dir = Path("data/chroma_rag") / token
+    persist_dir = Path("data/chroma_rag").resolve() / token
     persist_dir.mkdir(parents=True, exist_ok=True)
     return persist_dir, token
 
@@ -512,6 +600,13 @@ def build_parent_child_retriever(
     Returns:
         tuple[ParentDocumentRetriever, store, Chroma]
     """
+    # Windows/Streamlit uyumu icin persist_directory'i absolute yap
+    persist_abs = str(Path(persist_directory).resolve())
+    if docstore_dir:
+        docstore_abs = str(Path(docstore_dir).resolve())
+    else:
+        docstore_abs = None
+
     parent_splitter = RecursiveCharacterTextSplitter(
         chunk_size=parent_chunk_size,
         chunk_overlap=parent_chunk_overlap,
@@ -526,17 +621,17 @@ def build_parent_child_retriever(
     vectorstore = Chroma(
         collection_name=collection_name,
         embedding_function=embeddings,
-        persist_directory=persist_directory,
+        persist_directory=persist_abs,
     )
     # Kalici docstore zorunlu: Chroma diskte kalip InMemory docstore kullanilirsa
     # vektorler parent metnine map edilemez (yargi/writer'da 'kanit yok' zinciri).
-    if docstore_dir:
+    if docstore_abs:
         if LocalFileStore is None or create_kv_docstore is None:
             raise RuntimeError(
                 "Kalici parent docstore icin langchain-classic gerekli. "
                 "Komut: pip install langchain-classic"
             )
-        store = create_kv_docstore(LocalFileStore(docstore_dir))
+        store = create_kv_docstore(LocalFileStore(docstore_abs))
     else:
         store = InMemoryStore()
 
@@ -741,7 +836,20 @@ def index_repository_files(
         )
 
         # ParentDocumentRetriever parent kimliklerini kendi içinde yönetir.
-        retriever.add_documents([document])
+        # Bazi belgeler splitter sonrasi yine de 0 child uretebilir (tahmin kesin degildir);
+        # bu durumda Chroma bos embeddings listesiyle patlar → hatasi yakalayip atliyoruz.
+        try:
+            retriever.add_documents([document])
+        except Exception as add_exc:  # noqa: BLE001
+            err_s = str(add_exc).lower()
+            if "non-empty" in err_s or ("embedding" in err_s and "upsert" in err_s):
+                LOGGER.warning(
+                    "%s dosyasi Chroma upsert hatasi nedeniyle atlandi (muhtemelen 0 gecerli child parca): %s",
+                    file_path.name,
+                    add_exc,
+                )
+                continue
+            raise
 
         relative_path = _normalize_repo_relative_path(file_path, repo_root_path)
         LOGGER.info(
