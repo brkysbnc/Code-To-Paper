@@ -161,9 +161,12 @@ PART 1 — PAPER BODY
 (Prose + ### headings only; [n] citations only; no paths/lines; NO Mermaid or diagram markup.)
 
 PART 2 — REFERENCES
-(Short IEEE-like list; [1] MUST use the repository URL when provided below; do not invent URLs.
-For [1] (the repository): the author is the GitHub username or profile name from the repository URL, NOT any name from USER_LITERATURE_APPROVED. Do not assign literature authors to the repository citation. If the owner name is unclear from the URL, write the GitHub username as-is.
-If USER_LITERATURE_APPROVED contained [2], [3], … include concise entries for those user-provided sources without fabricating publishers or URLs.)
+CRITICAL REFERENCES RULE: Every citation number [n] that appears anywhere in PART 1 MUST have a corresponding entry here.
+- [1] MUST always appear using the repository URL provided below (do not invent URLs).
+  Author = GitHub username/profile name from the URL; do NOT borrow author names from USER_LITERATURE_APPROVED.
+- If USER_LITERATURE_APPROVED is not "(none)", you MUST include one entry per source [2], [3], … exactly matching the index numbers you cited in PART 1. Use the title provided in USER_LITERATURE_APPROVED; do NOT fabricate URLs or publishers.
+- NEVER omit a [n] entry that was cited in PART 1. A missing reference entry breaks the paper.
+- Format each line as: [n] Author(s), "Title," Source/URL, Year (where known; omit unknown fields rather than inventing them).
 
 PART 3 — TRACEABILITY
 Start this subsection with a line containing only:

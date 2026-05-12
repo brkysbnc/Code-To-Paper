@@ -587,6 +587,7 @@ def run_paper_pipeline(
             abstract_text=combined_abstract,
             keywords_text=combined_keywords,
             diagram_selections=diagram_selections,
+            user_literature_block=user_literature_block,
         )
 
         # "all" modunda diyagramları üret ve kaydet
@@ -619,6 +620,7 @@ def run_paper_pipeline(
                 paper_title=combined_title,
                 abstract_text=combined_abstract,
                 keywords_text=combined_keywords,
+                user_literature_block=user_literature_block,
             )
         m = re.match(r"^(planner|retrieval|writer|faithfulness_judge|post_judge)\[(\d+)\]$", str(step))
         if m:

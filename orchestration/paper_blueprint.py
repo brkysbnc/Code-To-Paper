@@ -149,7 +149,7 @@ DEFAULT_PAPER_SECTIONS: list[tuple[str, str]] = [
         "(d) Final paragraph: paper structure roadmap — what the reader will "
         "find in each section. Name ONLY sections that actually exist in this manuscript: "
         "Introduction and Motivation; Literature Review (only if user-supplied literature was used); "
-        "Methodology; System Architecture and Implementation; Conclusion. "
+        "Methodology; System Architecture and Implementation; Conclusion and Results. "
         "Do NOT promise a separate Evaluation, Results, or Experiments section unless CONTEXT "
         "documents comparable empirical evaluation for this repository. "
         "The Introduction must NOT summarize the paper like an abstract. "
@@ -187,11 +187,11 @@ DEFAULT_PAPER_SECTIONS: list[tuple[str, str]] = [
         "Map every substantive claim to repository evidence.",
     ),
     (
-        "Conclusion",
-        "Write a concluding section as flowing prose with NO subheadings. "
+        "Conclusion and Results",
+        "Write a combined Conclusion and Results section as flowing prose with NO subheadings. "
         "Structure as follows: "
-        "(a) Brief summary of the main contributions of the system. "
-        "(b) Key strengths observed from the implementation evidence. "
+        "(a) Brief summary of the key results and outcomes observed from the implementation evidence. "
+        "(b) Main contributions and strengths of the system grounded in repository evidence. "
         "(c) Limitations of the current system grounded in repository evidence "
         "(e.g. reliance on external LLM APIs, retrieval bounds, free-tier constraints). "
         "(d) Future work directions supported by the codebase. "
@@ -213,6 +213,7 @@ def combine_paper_markdown(
     abstract_text: str = "",
     keywords_text: str = "",
     diagram_selections: list[str] | None = None,
+    user_literature_block: str = "",
 ) -> str:
     """
     Bolum Writer ciktilarini tek Markdown dosyasinda birlestirir; TRACEABILITY bloklarini sonda toplar.
@@ -264,6 +265,42 @@ def combine_paper_markdown(
             trace_chunks.append(f"### {section_heading}\n\n{tr}\n")
 
     deduped = _dedupe_references(all_refs)
+
+    # ── Fallback: user-supplied literature missing from LLM's PART 2 ──────────
+    # If the LLM forgot to list [2], [3], … in PART 2, rebuild them from
+    # user_literature_block (format: "[2] Title\ntext\n\n[3] Title\ntext").
+    if user_literature_block.strip():
+        # Which [n] numbers (n >= 2) are already in deduped?
+        existing_nums: set[int] = set()
+        _num_re = re.compile(r"^\[(\d+)\]")
+        for r in deduped:
+            m = _num_re.match(r.strip())
+            if m and int(m.group(1)) >= 2:
+                existing_nums.add(int(m.group(1)))
+
+        # Which [n] numbers appear in the combined body text?
+        combined_body_text = "\n".join(lines)
+        cited_nums: set[int] = {
+            int(x) for x in re.findall(r"\[(\d+)\]", combined_body_text)
+            if int(x) >= 2
+        }
+
+        # Parse titles/entries from user_literature_block.
+        # Format produced by format_approved_for_writer: "[n] Title\nsnippet"
+        lit_entries: dict[int, str] = {}
+        _lit_entry_re = re.compile(
+            r"^\[(\d+)\]\s+(.+?)(?=\n\[\d+\]|\Z)", re.DOTALL | re.MULTILINE
+        )
+        for lm in _lit_entry_re.finditer(user_literature_block.strip()):
+            n = int(lm.group(1))
+            title_line = lm.group(2).strip().splitlines()[0].strip()
+            lit_entries[n] = title_line
+
+        for n in sorted(cited_nums - existing_nums):
+            if n in lit_entries:
+                deduped.append(f"{lit_entries[n]}")
+                # renumber is handled by enumerate at render time
+    # ─────────────────────────────────────────────────────────────────────────
     if deduped:
         lines.append("## References")
         lines.append("")
