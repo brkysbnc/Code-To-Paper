@@ -18,12 +18,20 @@ _REF_BLOCK_RE = re.compile(
 _REF_LINE_RE = re.compile(r"^\s*\[(\d+)\]\s+(.+?)\s*$")
 
 
-def _extract_references_from_body(text: str) -> tuple[str, list[str]]:
+def _extract_references_from_body(text: str) -> tuple[str, list[tuple[int, str]]]:
     """
-    Section body'sinden 'PART 2 — REFERENCES' blogunu cikarir; (temizlenmis_body, [ref_metinleri]) doner.
-    Sadece [n] ile baslayan satirlari ref olarak alir; gerisi atilir.
+    Section body'sinden 'PART 2 — REFERENCES' blogunu cikarir.
+
+    Donus:
+    - temizlenmis body
+    - `[(ref_num, ref_metin)]` listesi
+
+    Referans numarasini da sakliyoruz; boylece final References birlestirme
+    asamasinda hangi [n] kaydinin zaten LLM tarafindan uretildigi guvenli
+    sekilde gorulebilir. Bu, fallback'in ayni literatur kaynagini tekrar
+    ekleyip yapay bir [3] olusturmasini engeller.
     """
-    refs: list[str] = []
+    refs: list[tuple[int, str]] = []
     cleaned = text
     m = _REF_BLOCK_RE.search(text)
     if m:
@@ -31,7 +39,7 @@ def _extract_references_from_body(text: str) -> tuple[str, list[str]]:
         for line in block.splitlines():
             mm = _REF_LINE_RE.match(line)
             if mm:
-                refs.append(mm.group(2).strip())
+                refs.append((int(mm.group(1)), mm.group(2).strip()))
         cleaned = _REF_BLOCK_RE.sub("", text).strip()
     return cleaned, refs
 
@@ -237,7 +245,7 @@ def combine_paper_markdown(
         "",
     ]
     trace_chunks: list[str] = []
-    all_refs: list[str] = []
+    all_refs: list[tuple[int, str]] = []
 
     for block in section_results:
         section_heading = str(block.get("section_title") or "Section").strip()
@@ -264,25 +272,23 @@ def combine_paper_markdown(
         if tr:
             trace_chunks.append(f"### {section_heading}\n\n{tr}\n")
 
-    deduped = _dedupe_references(all_refs)
+    combined_body_text = "\n".join(lines)
+    cited_nums: set[int] = {int(x) for x in re.findall(r"\[(\d+)\]", combined_body_text)}
+
+    # Final unified References bolumune yalnizca govdede gercekten kullanilan
+    # referanslari tasiyoruz. Boylece Writer PART 2'de fazladan yazilan ama
+    # body'de hic atif almayan satirlar son dokumana sizmaz.
+    refs_in_use = [ref_text for ref_num, ref_text in all_refs if ref_num in cited_nums]
+    deduped = _dedupe_references(refs_in_use)
 
     # ── Fallback: user-supplied literature missing from LLM's PART 2 ──────────
     # If the LLM forgot to list [2], [3], … in PART 2, rebuild them from
     # user_literature_block (format: "[2] Title\ntext\n\n[3] Title\ntext").
     if user_literature_block.strip():
-        # Which [n] numbers (n >= 2) are already in deduped?
-        existing_nums: set[int] = set()
-        _num_re = re.compile(r"^\[(\d+)\]")
-        for r in deduped:
-            m = _num_re.match(r.strip())
-            if m and int(m.group(1)) >= 2:
-                existing_nums.add(int(m.group(1)))
-
-        # Which [n] numbers appear in the combined body text?
-        combined_body_text = "\n".join(lines)
-        cited_nums: set[int] = {
-            int(x) for x in re.findall(r"\[(\d+)\]", combined_body_text)
-            if int(x) >= 2
+        # LLM'in zaten urettigi literatur referans numaralarini ham section_refs'ten
+        # okuyarak sakliyoruz; deduped icindeki metinlerde [n] prefix'i artik yok.
+        existing_nums: set[int] = {
+            ref_num for ref_num, _ref_text in all_refs if ref_num >= 2 and ref_num in cited_nums
         }
 
         # Parse titles/entries from user_literature_block.
@@ -296,7 +302,7 @@ def combine_paper_markdown(
             title_line = lm.group(2).strip().splitlines()[0].strip()
             lit_entries[n] = title_line
 
-        for n in sorted(cited_nums - existing_nums):
+        for n in sorted(x for x in cited_nums if x >= 2 and x not in existing_nums):
             if n in lit_entries:
                 deduped.append(f"{lit_entries[n]}")
                 # renumber is handled by enumerate at render time

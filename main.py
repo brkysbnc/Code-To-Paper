@@ -167,11 +167,6 @@ def _gemini_retry_hint(exc: BaseException) -> str:
         return "API anahtari veya proje erisiminde sorun var (403). AI Studio / proje ayarlarini kontrol edin."
     if "404" in text or "not found" in text:
         return "Model veya endpoint bulunamadi (404). Model adini ve API surumunu kontrol edin."
-    if "non-empty" in text and "embedding" in text:
-        return (
-            "Chroma embedding listesi bos geldi (eski surum veya API'nin bos cevabi). "
-            "Projeyi guncelleyin; guncel retriever bos/None cevabi sifir vektorle tamamlar."
-        )
     return "Beklenmeyen Gemini hatasi. Mesaji kopyalayip ekibe iletin."
 
 
@@ -305,16 +300,7 @@ def _render_rag_indexing_section(
                     st.session_state["rag_indexed_paths_count"] = len(picked)
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Indeksleme hatasi: {exc}")
-                    hint = _gemini_retry_hint(exc)
-                    if hint:
-                        st.warning(hint)
-                    st.info(
-                        "Ipuclari:\n"
-                        "- Kotaniz dolmus olabilir (Gemini Free Tier).\n"
-                        "- İnternet baglantinizi kontrol edin.\n"
-                        "- Klasor yazma yetkilerini veya antivirus bloklamasini kontrol edin.\n"
-                        "- Hala cozulmuyorsa 'Klon klasoru' adini degistirip temiz bir baslangic yapin."
-                    )
+                    st.warning(_gemini_retry_hint(exc))
                     return
             st.success(
                 f"Indeksleme tamam. {totals.get('files', 0)} dosya, "
