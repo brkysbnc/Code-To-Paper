@@ -37,6 +37,7 @@ from export.ieee_template_export import (
     resolve_default_ieee_template,
 )
 from export.word_export import markdown_to_docx_bytes
+from experiments.ablation_runner import run_norag_full_paper
 from orchestration.paper_blueprint import DEFAULT_PAPER_SECTIONS
 from orchestration.section_pipeline import run_paper_pipeline, run_section_pipeline
 from retriever import (
@@ -515,6 +516,131 @@ def _compute_paper_faithfulness(section_blocks: list[dict]) -> tuple[float | Non
     return score, label, total_weight
 
 
+def _render_full_paper_result(paper_result: dict) -> None:
+    """
+    RAG ve No-RAG tam makale kosularini tek bir UI blogunda gosterir.
+    """
+    mode = str(paper_result.get("mode") or "rag").strip().lower()
+    is_norag = mode == "norag"
+
+    if paper_result.get("error"):
+        st.error(
+            f"Tam makale basarisiz (adim={paper_result.get('failed_step') or 'unknown'}): "
+            f"{paper_result.get('error')}"
+        )
+        if paper_result.get("failed_section_index") is not None:
+            st.caption(
+                f"Hata bolum indeksi: {paper_result.get('failed_section_index')} "
+                "(kismi cikti asagida olabilir)."
+            )
+        st.warning(_gemini_retry_hint(RuntimeError(str(paper_result.get("error")))))
+    else:
+        sections = list(paper_result.get("sections") or [])
+        n_sec = len(sections)
+        _pw_score, _pw_label, _pw_claims = _compute_paper_faithfulness(sections)
+        _faith_col1, _faith_col2, _faith_col3, _faith_col4 = st.columns(4)
+        _faith_col1.metric("Bölüm sayısı", n_sec)
+        _faith_col3.metric("Toplam iddia (claim)", _pw_claims)
+        if _pw_score is not None:
+            _faith_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(_pw_label, "⚫")
+            _faith_col4.metric(
+                "Makale geneli güvenilirlik",
+                f"{_faith_emoji} {_pw_score:.2f} ({_pw_label})",
+            )
+        else:
+            _faith_col4.metric("Makale geneli güvenilirlik", "— (judge_unavailable)")
+
+        if is_norag:
+            _ctx_docs = int(
+                paper_result.get("norag_context_docs")
+                or ((sections[0].get("parents_retrieved") if sections else 0) or 0)
+            )
+            _sel_files = int(paper_result.get("norag_selected_files") or 0)
+            _ctx_chars = int(paper_result.get("norag_context_chars") or 0)
+            _elapsed = float(paper_result.get("norag_generation_time_s") or 0.0)
+            _faith_col2.metric("Paylaşılan bağlam", _ctx_docs)
+            st.success(
+                f"No-RAG tam makale tamamlandi (bolum sayisi={n_sec}). "
+                f"Her bolum icin ayni {_ctx_docs} belge kullanildi."
+            )
+            st.caption(
+                f"Secilen dosya sayisi: {_sel_files} | Baglam boyutu: {_ctx_chars:,} karakter | "
+                f"Uretim suresi: {_elapsed:.2f} sn"
+            )
+        else:
+            totals = paper_result.get("rag_totals") or {}
+            _p_ct = int(totals.get("parents", 0) or 0)
+            _f_ct = int(totals.get("files", 0) or 0)
+            _reused_flg = bool(totals.get("reused"))
+            _faith_col2.metric("Toplam Blok (Parent)", _p_ct)
+            if _reused_flg and _f_ct == 0:
+                st.success(
+                    f"Tam makale tamamlandi (bolum sayisi={n_sec}). "
+                    f"Indeks yeniden kullanildi; indekste yaklasik {_p_ct} parent parca var "
+                    f"(bu calistirmada yeni dosya islenmedi)."
+                )
+            else:
+                st.success(
+                    f"Tam makale tamamlandi (bolum sayisi={n_sec}). "
+                    f"Bu oturumda {_f_ct} dosya islendi; toplam {_p_ct} parent parca."
+                )
+
+    for sb in paper_result.get("sections") or []:
+        rs = sb.get("retrieval_status")
+        if rs in ("empty_after_retry",):
+            st.warning(
+                f"Bolum '{sb.get('section_title')}': retrieval sonuc bos olabilir "
+                f"({rs})."
+            )
+
+    # Streamlit nested expander desteklemedigi icin bolumleri ust seviye bloklar olarak cizeriz.
+    _sections_for_display = list(paper_result.get("sections") or [])
+    if _sections_for_display:
+        st.markdown("**Bölüm önizlemeleri (güvenilirlik skorları)**")
+        for _sb in _sections_for_display:
+            _sb_title = str(_sb.get("section_title") or "Section")
+            st.markdown(f"---\n#### 📄 {_sb_title}")
+            _render_faithfulness_badge(_sb.get("faithfulness"), section_title=_sb_title)
+            _sb_trace = str((_sb.get("writer_metadata") or {}).get("traceability") or "").strip()
+            if _sb_trace:
+                with st.expander("TRACEABILITY (iç kontrol)", expanded=False):
+                    st.markdown(_sb_trace)
+
+    diagram_paths = paper_result.get("diagram_paths", {})
+    st.session_state["paper_diagram_paths"] = dict(diagram_paths)
+    if diagram_paths:
+        st.markdown("---")
+        st.subheader("📊 Üretilen Diyagramlar")
+        cols = st.columns(len(diagram_paths))
+        for col, (diag_type, path) in zip(cols, diagram_paths.items()):
+            with col:
+                if Path(path).exists():
+                    st.image(path, caption=diag_type.capitalize())
+                    with open(path, "rb") as f:
+                        st.download_button(
+                            label=f"⬇️ {diag_type.capitalize()} İndir",
+                            data=f,
+                            file_name=f"{diag_type}_diagram.png",
+                            mime="image/png",
+                            key=f"dl_{diag_type}",
+                            use_container_width=True,
+                        )
+
+    combined = str(paper_result.get("combined_markdown") or "").strip()
+    if combined:
+        st.session_state["full_paper_combined_md"] = combined
+    st.session_state["paper_pipeline_sections"] = list(
+        paper_result.get("sections") or []
+    )
+    if paper_result.get("sections"):
+        st.session_state["writer_draft_en"] = str(
+            paper_result["sections"][-1].get("writer_text") or ""
+        )
+        st.session_state["writer_metadata"] = dict(
+            paper_result["sections"][-1].get("writer_metadata") or {}
+        )
+
+
 def _render_agent_preview_panel() -> None:
     """
     Planner + (istege bagli) multi-query retrieval + Ingilizce writer taslagini test eder.
@@ -667,17 +793,38 @@ def _render_agent_preview_panel() -> None:
 
     _extra_rules = str(st.session_state.get("writer_extra_rules_input") or "").strip()
     _lit_block = str(st.session_state.get("literature_writer_block") or "").strip()
+    norag_max_total_chars = 60000
 
     if run_mode == "Tam makale (coklu bolum)":
         has_repo = all(
             st.session_state.get(k) is not None for k in ("paths", "root", "commit", "last_url")
         )
-        if st.button(
-            "Tam makale: indeks + 3 bolum (planner / retrieval / writer x3)",
-            type="primary",
-            use_container_width=True,
-            disabled=not has_repo,
-        ):
+        norag_max_total_chars = st.number_input(
+            "No-RAG toplam baglam karakter limiti",
+            min_value=10_000,
+            max_value=200_000,
+            value=60_000,
+            step=5_000,
+            help="No-RAG modunda secilen dosyalar bu toplam karakter limitine kadar tek baglam olarak birlestirilir.",
+        )
+        paper_result = None
+        col_rag_run, col_norag_run = st.columns(2)
+        with col_rag_run:
+            run_rag_full_paper = st.button(
+                "Tam makale: RAG calistir",
+                type="primary",
+                use_container_width=True,
+                disabled=not has_repo,
+            )
+        with col_norag_run:
+            run_norag_full_paper_btn = st.button(
+                "Tam makale: No-RAG calistir",
+                type="secondary",
+                use_container_width=True,
+                disabled=not has_repo,
+            )
+
+        if run_rag_full_paper or run_norag_full_paper_btn:
             if not has_repo:
                 st.error("Once repoyu cekin.")
                 return
@@ -691,24 +838,38 @@ def _render_agent_preview_panel() -> None:
             status = st.empty()
             try:
                 os.environ["GEMINI_CHAT_MODEL"] = _get_cached_gemini_chat_model_name()
-                status.info("Tam makale pipeline basladi (uzun surebilir)...")
-                with st.spinner("Indeks + 3 bolum yaziliyor..."):
-                    paper_result = run_paper_pipeline(
-                        repo_url=str(st.session_state["last_url"]),
-                        commit_hash=str(st.session_state["commit"]),
-                        repo_root=Path(st.session_state["root"]),
-                        paths_for_index=picked,
-                        sections=None,
-                        max_index_files=int(max_index_files),
-                        similarity_threshold=float(similarity_threshold),
-                        top_k_per_query=int(top_k_per_query),
-                        max_planner_queries=int(max_planner_queries),
-                        writer_extra_rules=_extra_rules,
-                        user_literature_block=_lit_block,
-                        existing_retriever=st.session_state.get("rag_retriever"),
-                        diagram_mode=_diagram_mode_val,
-                        manual_diagram_selection=_manual_diagram_selection,
-                    )
+                if run_rag_full_paper:
+                    status.info("RAG tam makale pipeline basladi (uzun surebilir)...")
+                    with st.spinner("Indeks + coklu bolum yaziliyor..."):
+                        paper_result = run_paper_pipeline(
+                            repo_url=str(st.session_state["last_url"]),
+                            commit_hash=str(st.session_state["commit"]),
+                            repo_root=Path(st.session_state["root"]),
+                            paths_for_index=picked,
+                            sections=None,
+                            max_index_files=int(max_index_files),
+                            similarity_threshold=float(similarity_threshold),
+                            top_k_per_query=int(top_k_per_query),
+                            max_planner_queries=int(max_planner_queries),
+                            writer_extra_rules=_extra_rules,
+                            user_literature_block=_lit_block,
+                            existing_retriever=st.session_state.get("rag_retriever"),
+                            diagram_mode=_diagram_mode_val,
+                            manual_diagram_selection=_manual_diagram_selection,
+                        )
+                else:
+                    status.info("No-RAG tam makale pipeline basladi (uzun surebilir)...")
+                    with st.spinner("No-RAG ortak baglam ile makale yaziliyor..."):
+                        paper_result = run_norag_full_paper(
+                            repo_url=str(st.session_state["last_url"]),
+                            commit_hash=str(st.session_state["commit"]),
+                            repo_root=Path(st.session_state["root"]),
+                            paths_for_index=picked,
+                            user_literature_block=_lit_block,
+                            writer_extra_rules=_extra_rules,
+                            max_index_files=int(max_index_files),
+                            max_total_chars=int(norag_max_total_chars),
+                        )
             except Exception as exc:  # noqa: BLE001
                 if "GOOGLE_API_KEY" in str(exc):
                     st.error("GOOGLE_API_KEY bulunamadi. Proje kokundeki .env dosyasina ekleyin.")
@@ -720,109 +881,8 @@ def _render_agent_preview_panel() -> None:
             finally:
                 status.empty()
 
-            if paper_result.get("error"):
-                st.error(
-                    f"Tam makale basarisiz (adim={paper_result.get('failed_step') or 'unknown'}): "
-                    f"{paper_result.get('error')}"
-                )
-                if paper_result.get("failed_section_index") is not None:
-                    st.caption(
-                        f"Hata bolum indeksi: {paper_result.get('failed_section_index')} "
-                        "(kismi cikti asagida olabilir)."
-                    )
-                st.warning(_gemini_retry_hint(RuntimeError(str(paper_result.get("error")))))
-            else:
-                totals = paper_result.get("rag_totals") or {}
-                n_sec = len(paper_result.get("sections") or [])
-                # Paper-wide faithfulness metric
-                _pw_score, _pw_label, _pw_claims = _compute_paper_faithfulness(
-                    list(paper_result.get("sections") or [])
-                )
-                _faith_col1, _faith_col2, _faith_col3, _faith_col4 = st.columns(4)
-                _faith_col1.metric("Bölüm sayısı", n_sec)
-                # `files` bu oturumda islenen dosya sayisidir; indeks yeniden kullanilinca 0 kalir.
-                # Gercek indeks boyutunu parent parca sayisi (Chroma/docstore) ile gosteriyoruz.
-                _faith_col2.metric("Toplam Blok (Parent)", int(totals.get("parents", 0) or 0))
-                _faith_col3.metric("Toplam iddia (claim)", _pw_claims)
-                if _pw_score is not None:
-                    _faith_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(_pw_label, "⚫")
-                    _faith_col4.metric(
-                        "Makale geneli güvenilirlik",
-                        f"{_faith_emoji} {_pw_score:.2f} ({_pw_label})",
-                    )
-                else:
-                    _faith_col4.metric("Makale geneli güvenilirlik", "— (judge_unavailable)")
-                _f_ct = int(totals.get("files", 0) or 0)
-                _p_ct = int(totals.get("parents", 0) or 0)
-                _reused_flg = bool(totals.get("reused"))
-                if _reused_flg and _f_ct == 0:
-                    st.success(
-                        f"Tam makale tamamlandi (bolum sayisi={n_sec}). "
-                        f"Indeks yeniden kullanildi; indekste yaklasik {_p_ct} parent parca var "
-                        f"(bu calistirmada yeni dosya islenmedi)."
-                    )
-                else:
-                    st.success(
-                        f"Tam makale tamamlandi (bolum sayisi={n_sec}). "
-                        f"Bu oturumda {_f_ct} dosya islendi; toplam {_p_ct} parent parca."
-                    )
-            for sb in paper_result.get("sections") or []:
-                rs = sb.get("retrieval_status")
-                if rs in ("empty_after_retry",):
-                    st.warning(
-                        f"Bolum '{sb.get('section_title')}': retrieval sonuc bos olabilir "
-                        f"({rs})."
-                    )
-            # --- Per-section faithfulness display ---
-            # Streamlit nested expander DESTEKLEMEZ; outer expander yerine markdown
-            # baslik + horizontal rule kullaniyoruz. Boylece icerideki "Claim breakdown"
-            # (badge icindeki) ve "TRACEABILITY (ic kontrol)" expander'lari top-level kalir.
-            _sections_for_display = list(paper_result.get("sections") or [])
-            if _sections_for_display:
-                st.markdown("**Bölüm önizlemeleri (güvenilirlik skorları)**")
-                for _sb in _sections_for_display:
-                    _sb_title = str(_sb.get("section_title") or "Section")
-                    st.markdown(f"---\n#### 📄 {_sb_title}")
-                    _render_faithfulness_badge(_sb.get("faithfulness"), section_title=_sb_title)
-                    _sb_trace = str((_sb.get("writer_metadata") or {}).get("traceability") or "").strip()
-                    if _sb_trace:
-                        with st.expander("TRACEABILITY (iç kontrol)", expanded=False):
-                            st.markdown(_sb_trace)
-
-            # Diyagramları göster; Word disari aktarimunda context PNG yolu kullanilir
-            diagram_paths = paper_result.get("diagram_paths", {})
-            st.session_state["paper_diagram_paths"] = dict(diagram_paths)
-            if diagram_paths:
-                st.markdown("---")
-                st.subheader("📊 Üretilen Diyagramlar")
-                cols = st.columns(len(diagram_paths))
-                for col, (diag_type, path) in zip(cols, diagram_paths.items()):
-                    with col:
-                        if Path(path).exists():
-                            st.image(path, caption=diag_type.capitalize())
-                            with open(path, "rb") as f:
-                                st.download_button(
-                                    label=f"⬇️ {diag_type.capitalize()} İndir",
-                                    data=f,
-                                    file_name=f"{diag_type}_diagram.png",
-                                    mime="image/png",
-                                    key=f"dl_{diag_type}",
-                                    use_container_width=True,
-                                )
-
-            combined = str(paper_result.get("combined_markdown") or "").strip()
-            if combined:
-                st.session_state["full_paper_combined_md"] = combined
-            st.session_state["paper_pipeline_sections"] = list(
-                paper_result.get("sections") or []
-            )
-            if paper_result.get("sections"):
-                st.session_state["writer_draft_en"] = str(
-                    paper_result["sections"][-1].get("writer_text") or ""
-                )
-                st.session_state["writer_metadata"] = dict(
-                    paper_result["sections"][-1].get("writer_metadata") or {}
-                )
+        if paper_result is not None:
+            _render_full_paper_result(paper_result)
 
     elif run_mode == "Tek akis":
         has_repo = all(
