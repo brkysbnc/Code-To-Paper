@@ -144,6 +144,16 @@ DEFAULT_COMBINED_KEYWORDS_PLACEHOLDER = (
 DEFAULT_PAPER_SECTIONS: list[tuple[str, str]] = [
     (
         "Introduction and Motivation",
+        "CRITICAL — OPENING SENTENCE RULE: Your very first sentence MUST NOT contain the words "
+        "'encounter', 'face', 'frequently', 'bottleneck', 'environment', or 'computing environments'. "
+        "These are abstract-style openings. Instead, open with one of these approaches: "
+        "(a) A specific technical fact from CONTEXT "
+        "(e.g. 'Accurately determining available CPU resources in containerized systems requires...') "
+        "(b) A direct statement of what the repository does "
+        "(e.g. 'The repository implements...') "
+        "(c) A specific engineering challenge visible in code "
+        "(e.g. 'When Cgroup limits restrict CPU bandwidth...') "
+        "Do NOT start with a general problem statement — that is the Abstract's job. "
         "Write a multi-paragraph Introduction of at least 350 words. "
         "Do NOT use generic academic openings like 'The rapid evolution of...' or "
         "'In recent years...'. Structure as follows: "
@@ -179,20 +189,24 @@ DEFAULT_PAPER_SECTIONS: list[tuple[str, str]] = [
     ),
     (
         "Methodology",
-        "Describe the methodology and design rationale that CONTEXT supports for THIS repository "
-        "(e.g. indexing or retrieval choices, orchestration, verification, generation workflow—ONLY topics evidenced in CONTEXT). "
-        "Focus on WHY/HOW where CONTEXT explains intent or structure; omit topics absent from CONTEXT. "
-        "Every named stage or architectural element attributed to [1] must be CONTEXT-derived; "
-        "never lift subsystem labels from user-supplied literature onto [1]. "
-        "Ground all claims strictly in repository evidence.",
+        "Describe the DESIGN RATIONALE and algorithmic choices behind the system grounded strictly in "
+        "CONTEXT. Focus on WHY decisions were made — why specific algorithms, data structures, or "
+        "processing strategies were chosen over alternatives. Do NOT describe what components exist — "
+        "that belongs in System Architecture. Do NOT assume a fixed domain or stack; infer the methodology "
+        "purely from CONTEXT. Cover: core algorithmic approach and its justification, key design trade-offs, "
+        "and how the system ensures correctness or reliability. Every claim must be CONTEXT-derived. "
+        "If CONTEXT does not support a design decision, write [Insufficient evidence] for that part.",
     ),
     (
         "System Architecture and Implementation",
-        "Detail architecture and implementation strictly from CONTEXT: components, modules, "
-        "data layers, external services, languages and frameworks mentioned in THIS repo. "
-        "Do not assume a fixed stack (any DB, LLM, UI, or agent framework)—only report what CONTEXT evidences. "
-        "Never describe [1] using naming borrowed from uploaded literature unless CONTEXT contains those strings. "
-        "Map every substantive claim to repository evidence.",
+        "Describe WHAT the system is made of and HOW components connect, strictly from CONTEXT. "
+        "Cover: specific modules and their responsibilities, data flow between components, external services "
+        "and APIs used, implementation stack (languages, frameworks, databases). Do NOT repeat design "
+        "rationale or algorithmic justifications — those belong in Methodology. Use ### subheadings for "
+        "distinct subsystems. Every named component must be CONTEXT-derived. "
+        "STRICT: Do NOT repeat any algorithmic justification or design rationale already stated in "
+        "Methodology. If a component was explained in Methodology, here only describe its structure and "
+        "connections — not why it was chosen.",
     ),
     (
         "Conclusion and Results",

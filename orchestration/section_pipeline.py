@@ -406,6 +406,16 @@ def run_paper_pipeline(
                 logger.warning("DiagramPlanner failed (soft): %s", _dex)
                 diagram_selections = []
 
+        # Introduction abstract avoidance için ön-taslak
+        # Kullanıcı abstract vermediyse repo URL'sinden basit bir placeholder oluştur
+        abstract_for_intro_avoidance = combined_abstract
+        if not abstract_for_intro_avoidance:
+            abstract_for_intro_avoidance = (
+                f"This paper presents an analysis of the "
+                f"repository at {repo_url}. It covers the "
+                f"system architecture, methodology, and "
+                f"implementation details of the codebase."
+            )
 
         for idx, (section_title, section_goal) in enumerate(use_sections):
             step = f"planner[{idx}]"
@@ -425,13 +435,26 @@ def run_paper_pipeline(
             )
 
             step = f"writer[{idx}]"
+
+            # Introduction için abstract'ı addendum olarak ekle
+            extra_addendum = writer_extra_rules
+            if "introduction" in section_title.lower() and abstract_for_intro_avoidance:
+                intro_addendum = (
+                    f"ABSTRACT AVOIDANCE — The following is the paper abstract. "
+                    f"Do NOT copy, paraphrase, or mirror any sentence from it. "
+                    f"Your Introduction must open from a completely different angle:\n\n"
+                    f"ABSTRACT:\n{abstract_for_intro_avoidance}\n\n"
+                    f"{writer_extra_rules}"
+                ).strip()
+                extra_addendum = intro_addendum
+
             writer_out = writer.generate_section(
                 section_title=section_title,
                 section_goal=section_goal,
                 parent_documents=list(docs),
                 max_parents=10,
                 repository_url=repo_url,
-                operator_addendum=writer_extra_rules,
+                operator_addendum=extra_addendum,
                 user_literature_block=user_literature_block,
             )
             meta = dict(writer_out.get("metadata") or {})

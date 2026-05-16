@@ -54,6 +54,8 @@ Produce THREE pieces of metadata in JSON format:
    - Prefer acronyms over full forms when both appear (e.g. "RAG" not "Retrieval-Augmented Generation").
    - Use standard IEEE keyword format: Title Case for multi-word terms, uppercase for acronyms.
    - Do NOT include generic words like "system", "paper", "approach", "method", "proposed".
+   - Do NOT use variable names, function names, class names, environment variable names, or any internal code identifier as a keyword (e.g. STN3d, LOKY_MAX_CPU_COUNT, safe_import are NOT valid IEEE keywords). Keywords must be general technical concepts, not implementation identifiers.
+   - Prefer broad technical concepts over implementation-specific terms (e.g. "Spatial Transformer Network" instead of "STN3d", "Resource Management" instead of "LOKY_MAX_CPU_COUNT").
 
 REPO URL:
 {repo_url}
@@ -158,35 +160,32 @@ def deduplicate_keywords(keywords: list[str]) -> list[str]:
     return result
 
 
-def _keywords_grounded_in_abstract(keywords: List[str], abstract: str) -> List[str]:
-    """
-    LLM keyword adaylarini abstract metnine baglar: yalnizca abstract icinde (buyuk/kucuk harf
-    duyarsiz alt-dize olarak) gecen ifadeler kalir. Ek model cagrisi yok; halisunasyonu keser.
-    """
-    hay = (abstract or "").lower()
-    out: List[str] = []
-    seen: set[str] = set()
-    for k in keywords:
-        t = str(k).strip()
-        if not t:
-            continue
-        if t.lower() in hay and t.lower() not in seen:
-            seen.add(t.lower())
-            out.append(t)
-    return out
+def _keywords_grounded_in_abstract(
+    keywords: list[str], abstract: str
+) -> list[str]:
+    abs_lower = abstract.lower()
+    grounded = []
+    for kw in keywords:
+        stop = {"the", "a", "an", "of", "in", "for",
+                "and", "or", "to", "is", "are", "was"}
+        words = [w.lower() for w in kw.split()
+                 if len(w) > 2 and w.lower() not in stop]
+        if any(w in abs_lower for w in words):
+            grounded.append(kw)
+    return grounded
 
 
 def _merge_keywords_llm_then_deterministic(
     grounded_llm: List[str],
     abstract: str,
     *,
-    max_keywords: int = 6,
+    max_keywords: int = 5,
 ) -> str:
     """
-    Once LLM'den gecen abstract-ici keyword'leri kullanir; 6'ya tamamlamak icin
-    extract_keywords_from_abstract ile doldurur (tekrarsiz). LLM listesi bossa tamamen deterministic.
+    LLM'den geçen abstract-içi keyword'leri kullanır.
+    Tamamlama yapmaz — kalitesiz keyword eklemek yerine
+    az keyword döndürmek tercih edilir.
     """
-    cap = max(1, int(max_keywords))
     out: List[str] = []
     seen: set[str] = set()
     for k in grounded_llm:
@@ -195,16 +194,7 @@ def _merge_keywords_llm_then_deterministic(
             continue
         seen.add(tl)
         out.append(k)
-        if len(out) >= cap:
-            return ", ".join(out)
-    det = extract_keywords_from_abstract(abstract, max_keywords=cap)
-    for part in [p.strip() for p in det.split(",") if p.strip()]:
-        pl = part.lower()
-        if pl in seen:
-            continue
-        seen.add(pl)
-        out.append(part)
-        if len(out) >= cap:
+        if len(out) >= max_keywords:
             break
     return ", ".join(out)
 
@@ -363,10 +353,10 @@ class MetadataWriter:
             kw_list = deduplicate_keywords(kw_list)
             grounded = _keywords_grounded_in_abstract(kw_list, abstract)
             # Az sayida gecerli terim kaldiysa tamamen deterministic daha guvenilir.
-            if len(grounded) < 2:
+            if len(grounded) < 1:
                 keywords = extract_keywords_from_abstract(abstract)
             else:
-                keywords = _merge_keywords_llm_then_deterministic(grounded, abstract, max_keywords=6)
+                keywords = _merge_keywords_llm_then_deterministic(grounded, abstract, max_keywords=5)
         else:
             keywords = extract_keywords_from_abstract(abstract)
 

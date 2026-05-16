@@ -156,6 +156,13 @@ APPLICATION DOMAIN FOR [1] (Introduction, Methodology, System Architecture and I
      listing ONLY sections that exist in this manuscript (per Section Goal).
      Do NOT place the full roadmap in the second paragraph.
 
+ANTI-REPETITION — Introduction vs Abstract:
+The Introduction MUST NOT copy, paraphrase, or mirror any sentence from the Abstract. The Abstract
+already covers the high-level summary. The Introduction must open with a DIFFERENT angle — expand on
+the specific technical context, the deployment scenario, or the engineering challenge. If your
+opening sentence has the same subject and verb structure as a typical abstract opening, stop and
+rewrite from a different perspective.
+
 OUTPUT — IN THIS ORDER (labels help downstream parsing):
 PART 1 — PAPER BODY
 (Prose + ### headings only; [n] citations only; no paths/lines; NO Mermaid or diagram markup.)
