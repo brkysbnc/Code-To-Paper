@@ -741,6 +741,28 @@ def _docstore_has_keys(docstore) -> bool:
     return False
 
 
+def _is_skippable_chroma_upsert_error(exc: BaseException) -> bool:
+    """
+    Chroma upsert sirasinda bos chunk / bos embedding kaynakli hatalari tanir.
+
+    pandas, celery vb. dosyalarda child parca uretilemeyince tum indeksin
+    cokmesini engellemek icin bu dosya atlanir.
+    """
+    err_s = str(exc).lower()
+    if any(
+        x in err_s
+        for x in (
+            "non-empty",
+            "numpy array",
+            "got []",
+            "embeddings to be",
+            "expected embeddings",
+        )
+    ):
+        return True
+    return "upsert" in err_s and "embedding" in err_s
+
+
 def index_repository_files(
     retriever: ParentDocumentRetriever,
     file_paths: Iterable[str | Path],
@@ -834,9 +856,19 @@ def index_repository_files(
         )
 
         # ParentDocumentRetriever parent kimliklerini kendi içinde yönetir.
-        retriever.add_documents([document])
-
         relative_path = _normalize_repo_relative_path(file_path, repo_root_path)
+        try:
+            retriever.add_documents([document])
+        except Exception as add_exc:  # noqa: BLE001
+            if _is_skippable_chroma_upsert_error(add_exc):
+                LOGGER.warning(
+                    "Indeks atlandi (bos chunk / embedding upsert): %s — %s",
+                    relative_path,
+                    add_exc,
+                )
+                continue
+            raise
+
         LOGGER.info(
             "%s dosyasi %s parent, %s child parcaya bolundu.",
             relative_path,
