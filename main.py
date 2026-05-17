@@ -9,6 +9,7 @@ multi-query retrieval bu ekrandan tetiklenebilir.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -51,6 +52,26 @@ from retriever import (
 # Önizlemede çok büyük dosyaları kesmek için üst sınır (karakter).
 _MAX_PREVIEW_CHARS = 80_000
 _MAX_INDEX_FILE_BYTES = 250_000
+# TIER2 disi: yol alt dizin adlari (substring degil, segment eslesmesi)
+_SECONDARY_DIR_NAMES = frozenset(
+    {
+        "test",
+        "tests",
+        "bench",
+        "benchmark",
+        "benchmarks",
+        "doc",
+        "docs",
+        "example",
+        "examples",
+        "tutorial",
+        "tutorials",
+        "demo",
+        "fixture",
+        "fixtures",
+        "tools",
+    }
+)
 _INDEX_SUFFIX_PRIORITY = (
     ".py",
     ".ts",
@@ -214,11 +235,29 @@ def _get_cached_gemini_chat_model_name() -> str:
 
 def _pick_paths_for_indexing(paths: list[Path], max_files: int) -> list[Path]:
     """
-    Indekslemek icin dosya listesini boyut ve uzanti onceligiyle kirpar.
-
-    Cok buyuk dosyalar embedding maliyetini patlatmasin diye atlanir.
+    3 katmanli slot butcesi ile dosya secimi:
+    TIER1 (max %20): README depth<=2, kok config, depth==2 __init__.py
+    TIER2 (kalan slotlar): test/bench/doc/tools olmayan .py dosyalari
+    TIER3 (yer kalirsa): diger uzantilar
+    Hepsi 250 KB sinirini asmayanlar arasinda.
     """
-    ranked: list[tuple[int, str, Path]] = []
+    if not paths:
+        return []
+
+    if len(paths) == 1:
+        repo_root = paths[0].resolve().parent
+    else:
+        all_parts = [p.parts for p in paths]
+        min_len = min(len(p) for p in all_parts)
+        common = list(paths[0].parts[:min_len])
+        for parts in all_parts[1:]:
+            common = common[: sum(1 for a, b in zip(common, parts) if a == b)]
+        repo_root = Path(*common) if common else paths[0].parent
+
+    tier1: list[tuple] = []
+    tier2: list[tuple] = []
+    tier3: list[tuple] = []
+
     for path in paths:
         if not path.is_file():
             continue
@@ -228,14 +267,74 @@ def _pick_paths_for_indexing(paths: list[Path], max_files: int) -> list[Path]:
             continue
         if size > _MAX_INDEX_FILE_BYTES:
             continue
+
+        name_lower = path.name.lower()
         suffix = path.suffix.lower()
+        path_str = path.as_posix().lower()
+
+        try:
+            rel = path.relative_to(repo_root)
+            depth = len(rel.parts)
+        except ValueError:
+            depth = 99
+
+        is_readme = name_lower.startswith("readme") and depth <= 2
+        is_root_config = depth <= 2 and name_lower in {
+            "pyproject.toml",
+            "setup.py",
+            "setup.cfg",
+            "cargo.toml",
+            "package.json",
+            "go.mod",
+        }
+        is_core_init = name_lower == "__init__.py" and depth == 2
+
+        if is_readme or is_root_config or is_core_init:
+            tier1.append((depth, path_str, path))
+            continue
+
+        rel_dir_parts = {part.lower() for part in rel.parts[:-1]}
+        is_secondary = bool(rel_dir_parts & _SECONDARY_DIR_NAMES)
+        if not is_secondary and suffix == ".py":
+            tier2.append((depth, -size, path_str, path))
+            continue
+
         try:
             prio = _INDEX_SUFFIX_PRIORITY.index(suffix)
         except ValueError:
             prio = len(_INDEX_SUFFIX_PRIORITY)
-        ranked.append((prio, path.as_posix().lower(), path))
-    ranked.sort(key=lambda item: (item[0], item[1]))
-    return [item[2] for item in ranked[: max(1, max_files)]]
+        tier3.append((prio, path_str, path))
+
+    tier1_max = min(len(tier1), max(3, max_files // 5))
+    tier2_max = max_files - tier1_max
+
+    tier1.sort(key=lambda x: (x[0], x[1]))
+    tier2.sort(key=lambda x: (x[0], x[1], x[2]))
+    tier3.sort(key=lambda x: (x[0], x[1]))
+
+    selected = (
+        [p for _, _, p in tier1[:tier1_max]]
+        + [p for _, _, _, p in tier2[:tier2_max]]
+        + [p for _, _, p in tier3]
+    )
+    selected = selected[: max(1, max_files)]
+
+    t1 = min(len(tier1), tier1_max)
+    t2 = min(len(tier2), tier2_max)
+    t3 = max(0, len(selected) - t1 - t2)
+    _logger = logging.getLogger(__name__)
+    _logger.info(
+        "File selection: TIER1=%d, TIER2=%d, TIER3=%d, total=%d",
+        t1,
+        t2,
+        t3,
+        len(selected),
+    )
+    for i, p in enumerate(selected[:20], 1):
+        tier_label = "TIER1" if i <= t1 else ("TIER2" if i <= t1 + t2 else "TIER3")
+        _logger.info(" %2d. [%s] %s", i, tier_label, p.as_posix())
+
+    return selected
 
 
 def _sync_rag_session_if_repo_changed(repo_url: str, commit_hash: str) -> None:
@@ -267,11 +366,10 @@ def _render_rag_indexing_section(
     Parent-child + Gemini embedding ile Chroma indekslemesini baslatan UI blogu.
     """
     _sync_rag_session_if_repo_changed(repo_url, commit_hash)
-    with st.expander("RAG: indeksleme (Gemini embedding + Parent-Child)", expanded=False):
+    with st.expander("RAG: indeksleme (Ollama/Gemini embedding + Parent-Child)", expanded=False):
         st.caption(
-            "Once repoyu cekin. Parent-child her dosyayi cok parcaya boler; Gemini free tier "
-            "dakikada ~100 embedding istegi sinirlar. Indeksleme yavas olabilir (throttle aktif). "
-            "Ilk denemede max dosya sayisini dusuk tutun (or. 5-10)."
+            "Once repoyu cekin. .env: EMBEDDING_PROVIDER=ollama (yerel) veya gemini. "
+            "Parent-child her dosyayi cok parcaya boler. Terminalde File selection loglarina bakin."
         )
         max_files = st.number_input(
             "Indekslenecek max dosya sayisi",
@@ -281,13 +379,13 @@ def _render_rag_indexing_section(
             step=1,
         )
         if st.button("Indekslemeyi baslat", type="secondary", use_container_width=True):
+            configure_logging()
             picked = _pick_paths_for_indexing(paths, int(max_files))
             if not picked:
                 st.error("Indeks icin uygun dosya bulunamadi.")
                 return
             with st.spinner("Retriever kuruluyor ve dosyalar indeksleniyor..."):
                 try:
-                    configure_logging()
                     retriever, _store, _vs = build_rag_stack_for_repo(repo_url, commit_hash)
                     totals = index_repository_files(
                         retriever,
@@ -828,6 +926,7 @@ def _render_agent_preview_panel() -> None:
             if not has_repo:
                 st.error("Once repoyu cekin.")
                 return
+            configure_logging()
             picked = _pick_paths_for_indexing(
                 list(st.session_state.get("paths") or []),
                 int(max_index_files),
@@ -897,6 +996,7 @@ def _render_agent_preview_panel() -> None:
             if not has_repo:
                 st.error("Once repoyu cekin.")
                 return
+            configure_logging()
             picked = _pick_paths_for_indexing(
                 list(st.session_state.get("paths") or []),
                 int(max_index_files),
@@ -1229,6 +1329,7 @@ def _render_agent_preview_panel() -> None:
 
 
 def main() -> None:
+    configure_logging()
     st.set_page_config(
         page_title="Code-to-Paper",
         page_icon="📄",

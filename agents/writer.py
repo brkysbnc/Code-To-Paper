@@ -77,6 +77,8 @@ APPLICATION DOMAIN FOR [1] (Introduction, Methodology, System Architecture and I
      (avoid recycled titles from unrelated papers).
    Exception — Introduction and Conclusion: write as flowing prose,
    no ### subheadings at all, no Mermaid diagram.
+   Despite the prose-only rule for Introduction, PART 3 — TRACEABILITY
+   table must still be produced after the main text.
    Exception — when Section Title is exactly 'Literature Review'
    or exactly 'Related Work':
      Write THREE paragraphs in this exact order:
@@ -176,6 +178,7 @@ CRITICAL REFERENCES RULE: Every citation number [n] that appears anywhere in PAR
 - Format each line as: [n] Author(s), "Title," Source/URL, Year (where known; omit unknown fields rather than inventing them).
 
 PART 3 — TRACEABILITY
+PART 3 — TRACEABILITY is mandatory for every section without exception, including Introduction and Motivation, Literature Review, and Conclusion. Never skip or omit this part.
 Start this subsection with a line containing only:
 TRACEABILITY:
 Then a markdown table with columns:
@@ -326,3 +329,4 @@ CONTEXT (reminder: source files below — prose output rules still apply; never 
                 "text": f"Error generating section: {e}",
                 "metadata": {"parents_used": 0, "status": "error", "traceability": ""},
             }
+    

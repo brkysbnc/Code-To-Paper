@@ -513,22 +513,42 @@ def run_paper_pipeline(
                         block["faithfulness"]["claim_count"],
                     )
                 else:
-                    logger.warning(
-                        "Faithfulness judge skipped for '%s': writer 'TRACEABILITY:' marker'i uretmedi "
-                        "ve claim tablosu da bulunamadi (writer_text=%d karakter). Fallback low-score uygulanacak.",
-                        section_title,
-                        len(writer_text_full),
-                    )
-                    # Soft fallback: UI'da 'judge_unavailable' yerine deterministik dusuk skor goster.
-                    # Boylece kota/format sorunu yasansa da rapor akisi kopmaz.
-                    block["faithfulness"] = {
-                        "score": 0.0,
-                        "label": "low",
-                        "claim_count": 0,
-                        "claims": [],
-                        "raw_llm_response": "",
-                        "judge_note": "traceability_missing",
-                    }
+                    if len(writer_text_full) > 500:
+                        logger.info(
+                            "Faithfulness judge [%s]: TRACEABILITY yok; uzun metin (%d karakter) "
+                            "dogrudan judge ediliyor.",
+                            section_title,
+                            len(writer_text_full),
+                        )
+                        block["faithfulness"] = judge_section_faithfulness(
+                            writer_text=writer_text_full,
+                            writer_traceability=writer_text_full,
+                            parent_documents=list(docs),
+                            llm_invoke=_safe_invoke,
+                            user_literature_block=user_literature_block,
+                        )
+                        logger.info(
+                            "Faithfulness judge [%s]: score=%.3f label=%s claims=%d",
+                            section_title,
+                            block["faithfulness"]["score"],
+                            block["faithfulness"]["label"],
+                            block["faithfulness"]["claim_count"],
+                        )
+                    else:
+                        logger.warning(
+                            "Faithfulness judge skipped for '%s': TRACEABILITY yok ve metin kisa "
+                            "(%d karakter). Fallback low-score.",
+                            section_title,
+                            len(writer_text_full),
+                        )
+                        block["faithfulness"] = {
+                            "score": 0.0,
+                            "label": "low",
+                            "claim_count": 0,
+                            "claims": [],
+                            "raw_llm_response": "",
+                            "judge_note": "traceability_missing",
+                        }
             except Exception as _jex:  # noqa: BLE001
                 logger.warning(
                     "Faithfulness judge failed (soft, section='%s'): %s",

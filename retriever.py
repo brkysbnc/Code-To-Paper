@@ -18,6 +18,7 @@ Temel akış:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -66,6 +67,13 @@ except ImportError:  # pragma: no cover - mevcut requirements ile uyumluluk
 
 from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+try:
+    from langchain_ollama import OllamaEmbeddings
+
+    _OLLAMA_AVAILABLE = True
+except ImportError:
+    _OLLAMA_AVAILABLE = False
 
 LOGGER = logging.getLogger(__name__)
 
@@ -275,6 +283,72 @@ def build_gemini_embeddings(
     return GoogleGenerativeAIEmbeddings(model=model, google_api_key=api_key)
 
 
+def build_ollama_embeddings(
+    *,
+    model: str = "nomic-embed-text",
+    base_url: str = "http://localhost:11434",
+) -> "OllamaEmbeddings":
+    """Yerel Ollama sunucusu uzerinden embedding uretir."""
+    if not _OLLAMA_AVAILABLE:
+        raise ImportError(
+            "langchain-ollama paketi bulunamadi. "
+            "Komut: pip install langchain-ollama"
+        )
+    return OllamaEmbeddings(model=model, base_url=base_url)
+
+
+def build_embeddings(provider: str = "gemini", **kwargs) -> Embeddings:
+    """EMBEDDING_PROVIDER'a gore Gemini veya Ollama embedding nesnesi dondurur."""
+    if provider == "ollama":
+        model = kwargs.get("model", "nomic-embed-text")
+        base_url = kwargs.get("base_url", "http://localhost:11434")
+        return build_ollama_embeddings(model=model, base_url=base_url)
+    return build_gemini_embeddings(model=kwargs.get("model", "gemini-embedding-001"))
+
+
+_EMBEDDING_PROVIDER_META = "embedding_provider.json"
+
+
+def _current_embedding_provider() -> str:
+    """Aktif embedding saglayicisini .env'den okur (varsayilan: gemini)."""
+    return os.getenv("EMBEDDING_PROVIDER", "gemini").strip().lower()
+
+
+def _read_stored_embedding_provider(persist_dir: Path) -> str | None:
+    """Persist dizinindeki onceki indeksin hangi provider ile yapildigini okur."""
+    meta_path = persist_dir / _EMBEDDING_PROVIDER_META
+    if not meta_path.is_file():
+        return None
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        provider = str(data.get("provider", "")).strip().lower()
+        return provider or None
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+
+
+def _write_stored_embedding_provider(persist_dir: Path, provider: str) -> None:
+    """Basarili indeksleme sonrasi kullanilan embedding provider'i diske yazar."""
+    meta_path = persist_dir / _EMBEDDING_PROVIDER_META
+    payload = {"provider": provider.strip().lower()}
+    meta_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _assert_embedding_provider_compatible(persist_dir: Path) -> None:
+    """
+    Mevcut Chroma indeksi baska provider ile olusturulduysa hata verir.
+
+    Ayni boyutta farkli embedding uzaylari karisinca retrieval sessizce bozulur.
+    """
+    stored = _read_stored_embedding_provider(persist_dir)
+    current = _current_embedding_provider()
+    if stored and stored != current:
+        raise ValueError(
+            f"Indeks '{stored}' embedding ile olusturulmus; su an '{current}' secili. "
+            "data/chroma_rag altindaki ilgili klasoru silip yeniden indeksleyin."
+        )
+
+
 def _resolve_repo_persist_dir(repo_url: str, commit_hash: str) -> tuple[Path, str]:
     """
     repo_url + commit_hash'ten deterministik bir token uretip Chroma kalici dizinini dondurur.
@@ -321,6 +395,25 @@ def build_rag_stack_for_repo(
     icinde diske yazilir; sonraki oturum/cagriya hazir kalir (free-tier embed kotasini korur).
     """
     persist_dir, token = _resolve_repo_persist_dir(repo_url, commit_hash)
+    docstore_dir = persist_dir / "docstore"
+    docstore_dir.mkdir(parents=True, exist_ok=True)
+    _assert_embedding_provider_compatible(persist_dir)
+
+    provider = _current_embedding_provider()
+    ollama_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text").strip()
+    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
+
+    if provider == "ollama":
+        LOGGER.info("Embedding provider: Ollama (%s @ %s)", ollama_model, ollama_url)
+        embeddings = build_ollama_embeddings(model=ollama_model, base_url=ollama_url)
+        return build_parent_child_retriever(
+            embeddings,
+            collection_name=f"code_pc_{token}",
+            persist_directory=str(persist_dir),
+            docstore_dir=str(docstore_dir),
+        )
+
+    LOGGER.info("Embedding provider: Gemini")
     base_embeddings = build_gemini_embeddings(model=embedding_model)
     # Free tier: cok sayida child = cok embed; istekleri seyrelt
     if os.getenv("GEMINI_EMBED_NO_THROTTLE", "").strip().lower() in {"1", "true", "yes"}:
@@ -341,8 +434,6 @@ def build_rag_stack_for_repo(
             min_interval_s=min_iv,
             batch_size=bs,
         )
-    docstore_dir = persist_dir / "docstore"
-    docstore_dir.mkdir(parents=True, exist_ok=True)
     return build_parent_child_retriever(
         embeddings,
         collection_name=f"code_pc_{token}",
@@ -683,6 +774,8 @@ def index_repository_files(
         except Exception:  # noqa: BLE001
             vs_has, ds_has = False, False
         if vs_has and ds_has:
+            persist_dir, _ = _resolve_repo_persist_dir(repo_url, commit_hash)
+            _assert_embedding_provider_compatible(persist_dir)
             try:
                 n_children = int(retriever.vectorstore._collection.count())  # type: ignore[attr-defined]
             except Exception:  # noqa: BLE001
@@ -761,6 +854,9 @@ def index_repository_files(
         totals["parents"],
         totals["children"],
     )
+    if totals["files"] > 0:
+        persist_dir, _ = _resolve_repo_persist_dir(repo_url, commit_hash)
+        _write_stored_embedding_provider(persist_dir, _current_embedding_provider())
     return totals
 
 

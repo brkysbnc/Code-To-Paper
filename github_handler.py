@@ -40,6 +40,16 @@ _REMOVE_DIR_NAMES: Set[str] = {
     ".tox",
     "eggs",
     ".eggs",
+    "benchmarks",
+    "bench",
+    "doc",
+    "docs",
+    "examples",
+    "example",
+    "tutorials",
+    "tutorial",
+    "demo",
+    "demos",
 }
 
 # Uzantısı bu listede olan dosyalar silinir (görsel, arşiv, binary, log vb.).
